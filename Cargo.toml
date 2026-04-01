@@ -1,0 +1,92 @@
+[workspace]
+members = [
+    "crates/aira-core",
+    "crates/aira-net",
+    "crates/aira-storage",
+    "crates/aira-daemon",
+    "crates/aira-cli",
+    # "crates/aira-gui",   # v0.2
+    # "crates/aira-ffi",   # v0.3
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+authors = ["Aira contributors"]
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/aira-messenger/aira"
+rust-version = "1.82"
+
+[workspace.dependencies]
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+
+# Networking
+iroh = "0.97"
+iroh-blobs = "0.99"
+
+# Post-quantum crypto (Phase 1: RustCrypto — чистый Rust)
+# Phase 2 (production): aws-lc-rs = "1.16" (FIPS 140-3)
+ml-kem = "0.2"
+ml-dsa = "0.0.4"
+
+# Классический компонент гибридного KEM
+x25519-dalek = { version = "2", features = ["static_secrets"] }
+
+# Симметричное шифрование
+chacha20poly1305 = "0.10"
+
+# Хэширование и KDF
+blake3 = "1"
+argon2 = "0.5"
+
+# Zeroization секретов в памяти
+zeroize = { version = "1", features = ["derive"] }
+
+# Сериализация
+serde = { version = "1", features = ["derive"] }
+postcard = { version = "1", features = ["alloc"] }
+
+# База данных
+redb = "2"
+
+# TUI
+ratatui = "0.29"
+crossterm = "0.28"
+
+# i18n (Mozilla Fluent)
+fluent = "0.16"
+fluent-bundle = "0.15"
+unic-langid = "0.9"
+rust-embed = "8"
+
+# Rate limiting & DoS protection
+governor = "0.8"
+
+# Pluggable transports / DPI resistance
+ptrs = "0.8"
+# arti-client = "0.27"    # Tor (feature = "tor")
+
+# GUI (v0.2)
+# eframe = "0.29"
+# egui = "0.29"
+
+# FFI биндинги (v0.3)
+# uniffi = "0.28"
+
+# Утилиты
+thiserror = "2"
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true
+
+[profile.dev]
+opt-level = 0
+debug = true

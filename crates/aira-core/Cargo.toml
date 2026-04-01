@@ -1,0 +1,38 @@
+[package]
+name = "aira-core"
+description = "Aira core: cryptography, protocol, Triple Ratchet (SPQR)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+# PQ криптография
+ml-kem.workspace = true
+ml-dsa.workspace = true
+x25519-dalek.workspace = true
+chacha20poly1305.workspace = true
+blake3.workspace = true
+argon2.workspace = true
+zeroize.workspace = true
+
+# Сериализация
+serde.workspace = true
+postcard.workspace = true
+
+# i18n
+fluent.workspace = true
+fluent-bundle.workspace = true
+unic-langid.workspace = true
+rust-embed.workspace = true
+
+# Утилиты
+thiserror.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+proptest = "1"
+
+[features]
+default = []
+# fips = []   # Phase 2: aws-lc-rs backend

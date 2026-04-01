@@ -1,0 +1,30 @@
+[package]
+name = "aira-net"
+description = "Aira network layer: iroh, relay, pluggable transports"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+aira-core = { path = "../aira-core" }
+
+iroh.workspace = true
+iroh-blobs.workspace = true
+tokio.workspace = true
+serde.workspace = true
+postcard.workspace = true
+governor.workspace = true
+ptrs.workspace = true
+thiserror.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+zeroize.workspace = true
+blake3.workspace = true
+
+[features]
+default = []
+obfs4 = []
+mimicry = []
+reality = []
+tor = ["dep:arti-client"]
+# arti-client = { version = "0.27", optional = true }

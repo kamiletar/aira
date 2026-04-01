@@ -1,0 +1,50 @@
+# Rust
+/target/
+Cargo.lock    # для бинарников раскомментировать
+**/*.rs.bk
+*.pdb
+
+# Fuzz artifacts
+fuzz/target/
+fuzz/corpus/
+fuzz/artifacts/
+
+# IDE
+.idea/
+.vscode/settings.json
+*.iml
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Secrets
+.env
+.env.*
+*.key
+*.pem
+*.p12
+secrets/
+
+# Логи
+*.log
+logs/
+
+# Build artifacts
+dist/
+build/
+
+# Coverage
+lcov.info
+coverage/
+
+# redb databases (dev)
+*.redb
+*.redb-lock
+
+# Бэкапы Aira (тестовые)
+*.aira.enc
+
+# Tempfiles
+*.tmp
+*.bak
