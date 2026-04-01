@@ -64,9 +64,12 @@ rust-embed = "8"
 # Rate limiting & DoS protection
 governor = "0.8"
 
-# Pluggable transports / DPI resistance
-ptrs = "0.8"
-# arti-client = "0.27"    # Tor (feature = "tor")
+# Constant-time comparisons (MAC, hash — timing attack prevention)
+subtle = "2"
+
+# Pluggable transports / DPI resistance (M7)
+# ptrs = "0.8"              # TODO(M7): verify crate name/version on crates.io
+# arti-client = "0.27"      # Tor (feature = "tor", M12)
 
 # GUI (v0.2)
 # eframe = "0.29"
