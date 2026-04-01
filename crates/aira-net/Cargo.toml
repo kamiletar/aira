@@ -26,5 +26,6 @@ default = []
 obfs4 = []
 mimicry = []
 reality = []
-tor = ["dep:arti-client"]
+tor = []
+# tor = ["dep:arti-client"]  # TODO(M7): enable when arti-client is added
 # arti-client = { version = "0.27", optional = true }

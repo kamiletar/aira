@@ -12,6 +12,7 @@
 /// Get a localized string by message ID.
 ///
 /// Falls back to English if the locale doesn't have the message.
+#[must_use]
 pub fn t(_locale: &str, _id: &str) -> String {
     // TODO(M5): implement via FluentBundle
     todo!("M5: implement i18n")

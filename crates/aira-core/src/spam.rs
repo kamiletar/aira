@@ -1,19 +1,20 @@
-//! Spam protection: ContactRequest + Proof-of-Work.
+//! Spam protection: `ContactRequest` + Proof-of-Work.
 //!
 //! Contact-first model: cannot message a stranger without their consent.
-//! PoW (~1s on consumer CPU, 20 bits) prevents mass bot requests.
+//! `PoW` (~1s on consumer CPU, 20 bits) prevents mass bot requests.
 //! See SPEC.md §13.
 //!
 //! TODO(M2/M5): implement when networking is ready
 
 use crate::proto::AiraError;
 
-/// Difficulty for ContactRequest PoW: ~1 second on a consumer CPU.
+/// Difficulty for `ContactRequest` `PoW`: ~1 second on a consumer CPU.
 pub const POW_DIFFICULTY_BITS: u8 = 20;
 
-/// Verify a Proof-of-Work for a ContactRequest.
+/// Verify a Proof-of-Work for a `ContactRequest`.
 ///
 /// `BLAKE3(request_bytes ‖ nonce)` must have `difficulty` leading zero bits.
+#[must_use]
 pub fn verify_pow(request_bytes: &[u8], nonce: u64, difficulty: u8) -> bool {
     let mut input = request_bytes.to_vec();
     input.extend_from_slice(&nonce.to_le_bytes());
@@ -33,7 +34,12 @@ fn leading_zero_bits(bytes: &[u8]) -> u32 {
     count
 }
 
-/// Solve a PoW puzzle (blocking — run in a thread for UI responsiveness).
+/// Solve a `PoW` puzzle (blocking — run in a thread for UI responsiveness).
+///
+/// # Errors
+///
+/// Returns [`AiraError::Handshake`] if the entire `u64` nonce space is
+/// exhausted without finding a valid proof (practically impossible).
 pub fn solve_pow(request_bytes: &[u8], difficulty: u8) -> Result<u64, AiraError> {
     for nonce in 0u64.. {
         if verify_pow(request_bytes, nonce, difficulty) {

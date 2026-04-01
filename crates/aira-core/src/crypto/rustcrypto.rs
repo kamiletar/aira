@@ -1,7 +1,7 @@
-//! RustCrypto backend (Phase 1): ml-kem + ml-dsa — pure Rust.
+//! `RustCrypto` backend (Phase 1): ml-kem + ml-dsa — pure Rust.
 //!
 //! See SPEC.md §10.1 for the migration strategy to aws-lc-rs (Phase 2).
-//! TODO(M1): implement CryptoProvider for RustCrypto
+//! TODO(M1): implement `CryptoProvider` for `RustCrypto`
 
 use super::{CryptoError, CryptoProvider};
 use zeroize::Zeroizing;
@@ -9,7 +9,7 @@ use zeroize::Zeroizing;
 pub struct RustCryptoProvider;
 
 impl CryptoProvider for RustCryptoProvider {
-    type SigningKey = ();   // TODO(M1): ml_dsa::SigningKey<ml_dsa::MlDsa65>
+    type SigningKey = (); // TODO(M1): ml_dsa::SigningKey<ml_dsa::MlDsa65>
     type VerifyingKey = (); // TODO(M1): ml_dsa::VerifyingKey<ml_dsa::MlDsa65>
     type KemDecapsKey = (); // TODO(M1): ml_kem::DecapsKey<ml_kem::MlKem768>
     type KemEncapsKey = (); // TODO(M1): ml_kem::EncapsKey<ml_kem::MlKem768>

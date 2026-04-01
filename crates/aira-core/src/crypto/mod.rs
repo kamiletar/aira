@@ -1,8 +1,8 @@
-//! CryptoProvider abstraction — allows swapping RustCrypto (Phase 1)
+//! `CryptoProvider` abstraction — allows swapping `RustCrypto` (Phase 1)
 //! for aws-lc-rs FIPS 140-3 (Phase 2) without rewriting protocol logic.
 //!
 //! See SPEC.md §10.1 for the migration strategy.
-//! See docs/KEY_CONTEXTS.md for the canonical list of KDF contexts.
+//! See `docs/KEY_CONTEXTS.md` for the canonical list of KDF contexts.
 
 pub mod rustcrypto;
 // pub mod awslc;  // Phase 2: uncomment when migrating to FIPS
@@ -28,10 +28,14 @@ pub trait CryptoProvider {
     /// Generate ML-KEM-768 keypair from a 32-byte seed.
     fn kem_keygen(seed: &[u8; 32]) -> (Self::KemDecapsKey, Self::KemEncapsKey);
 
-    /// ML-KEM-768 encapsulation. Returns (ciphertext, shared_secret).
+    /// ML-KEM-768 encapsulation. Returns (ciphertext, `shared_secret`).
     fn kem_encaps(pk: &Self::KemEncapsKey) -> (Vec<u8>, zeroize::Zeroizing<[u8; 32]>);
 
-    /// ML-KEM-768 decapsulation. Returns shared_secret.
+    /// ML-KEM-768 decapsulation. Returns `shared_secret`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CryptoError::DecapsFailed`] if the ciphertext is invalid.
     fn kem_decaps(
         sk: &Self::KemDecapsKey,
         ct: &[u8],

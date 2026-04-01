@@ -20,8 +20,8 @@
 pub mod connection;
 pub mod discovery;
 pub mod endpoint;
-pub mod relay;
 pub mod ratelimit;
+pub mod relay;
 pub mod transport;
 
 /// ALPN protocol identifiers.

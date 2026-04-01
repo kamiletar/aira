@@ -7,6 +7,7 @@
 //! TODO(M1): full implementation
 
 /// Pad `plaintext` to the next fixed block size.
+#[must_use]
 pub fn pad_message(plaintext: &[u8]) -> Vec<u8> {
     const BLOCK_SIZES: [usize; 5] = [256, 512, 1024, 2048, 4096];
     let target = BLOCK_SIZES
@@ -15,13 +16,16 @@ pub fn pad_message(plaintext: &[u8]) -> Vec<u8> {
         .unwrap_or(&4096);
     let mut padded = Vec::with_capacity(*target);
     // First 2 bytes: original length (little-endian)
-    padded.extend_from_slice(&(plaintext.len() as u16).to_le_bytes());
+    #[allow(clippy::cast_possible_truncation)]
+    let len = plaintext.len() as u16; // safe: max block is 4096 < u16::MAX
+    padded.extend_from_slice(&len.to_le_bytes());
     padded.extend_from_slice(plaintext);
     padded.resize(*target, 0);
     padded
 }
 
 /// Remove padding and return the original plaintext.
+#[must_use]
 pub fn unpad_message(padded: &[u8]) -> Option<&[u8]> {
     if padded.len() < 2 {
         return None;

@@ -10,9 +10,14 @@
 ///
 /// # Example
 /// ```
+/// use aira_core::safety::safety_number;
+///
+/// let alice_key = [1u8; 32];
+/// let bob_key = [2u8; 32];
 /// let num = safety_number(&alice_key, &bob_key);
-/// assert_eq!(num.len(), 72); // 60 digits + 11 spaces + newlines
+/// assert_eq!(num.len(), 71); // 60 digits + 11 spaces
 /// ```
+#[must_use]
 pub fn safety_number(key_a: &[u8], key_b: &[u8]) -> String {
     // Sort keys so both peers get the same result regardless of who calls
     let (first, second) = if key_a < key_b {

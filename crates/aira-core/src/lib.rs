@@ -5,13 +5,13 @@
 //!
 //! # Key modules
 //!
-//! - [`crypto`] — CryptoProvider trait and implementations
+//! - [`crypto`] — `CryptoProvider` trait and implementations
 //! - [`seed`] — BIP-39 seed phrase and deterministic key derivation
 //! - [`identity`] — ML-DSA-65 identity keypair
 //! - [`kem`] — Hybrid X25519 + ML-KEM-768 key agreement
 //! - [`handshake`] — PQXDH handshake + capability negotiation
 //! - [`ratchet`] — Triple Ratchet (SPQR): classical DR + PQ ratchet
-//! - [`proto`] — Message format, PlainPayload, EncryptedEnvelope
+//! - [`proto`] — Message format, `PlainPayload`, `EncryptedEnvelope`
 //! - [`padding`] — Message padding to fixed-size blocks
 //! - [`safety`] — Safety Numbers for key verification
 //! - [`i18n`] — Mozilla Fluent i18n

@@ -16,12 +16,10 @@ multiple-versions = "warn"
 wildcards = "deny"
 
 [advisories]
-# db-path не указываем — cargo-deny использует дефолтный путь платформы
 db-urls = ["https://github.com/rustsec/advisory-db"]
-vulnerability = "deny"
-unmaintained = "warn"
-yanked = "deny"
-notice = "warn"
+# cargo-deny 0.19+: vulnerability/unmaintained/yanked/notice moved to
+# deny.toml [graph] or are handled by default deny/warn behavior.
+# Only keep what the new schema accepts.
 
 [sources]
 unknown-registry = "deny"

@@ -3,14 +3,14 @@
 //! A user's entire identity is recoverable from a 24-word BIP-39 phrase.
 //! All keys are derived deterministically via Argon2id + BLAKE3-KDF.
 //!
-//! # Key derivation contexts (see docs/KEY_CONTEXTS.md)
+//! # Key derivation contexts (see `docs/KEY_CONTEXTS.md`)
 //!
 //! | Context                | Algorithm   | Purpose                  |
 //! |------------------------|-------------|--------------------------|
 //! | `aira/identity/0`      | ML-DSA-65   | Identity signing key     |
 //! | `aira/x25519/0`        | X25519      | ECDH component of KEM    |
 //! | `aira/mlkem/0`         | ML-KEM-768  | PQ KEM component         |
-//! | `aira/storage/0`       | ChaCha20    | Database encryption key  |
+//! | `aira/storage/0`       | `ChaCha20`  | Database encryption key  |
 //!
 //! # Security
 //!
@@ -18,7 +18,7 @@
 //! The `/0` generation suffix allows key rotation without changing the phrase.
 
 use argon2::{Algorithm, Argon2, Params, Version};
-use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
+use zeroize::{ZeroizeOnDrop, Zeroizing};
 
 use crate::proto::AiraError;
 
@@ -40,6 +40,11 @@ impl MasterSeed {
     /// Derive a master seed from a 24-word BIP-39 mnemonic phrase.
     ///
     /// This is intentionally slow (~1-3s) due to Argon2id memory-hardness.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AiraError::SeedDerivation`] if the phrase is invalid or
+    /// Argon2id hashing fails.
     pub fn from_phrase(phrase: &str) -> Result<Self, AiraError> {
         let entropy = bip39_decode(phrase)?;
         let mut seed = Zeroizing::new([0u8; 32]);
@@ -55,6 +60,12 @@ impl MasterSeed {
     }
 
     /// Generate a new random 24-word BIP-39 mnemonic and derive the seed.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internally generated phrase fails to parse (should never
+    /// happen — indicates a bug in BIP-39 encoding).
+    #[must_use]
     pub fn generate() -> (String, Self) {
         let entropy: [u8; 32] = rand_entropy();
         let phrase = bip39_encode(&entropy);
@@ -64,13 +75,11 @@ impl MasterSeed {
 
     /// Derive a 32-byte subkey for a specific purpose.
     ///
-    /// The `context` string must be unique per use-case (see docs/KEY_CONTEXTS.md).
+    /// The `context` string must be unique per use-case (see `docs/KEY_CONTEXTS.md`).
     /// Using the same context for different purposes is a security vulnerability.
     #[must_use]
     pub fn derive(&self, context: &str) -> Zeroizing<[u8; 32]> {
-        let mut out = Zeroizing::new([0u8; 32]);
-        blake3::derive_key(context, self.0.as_ref(), out.as_mut());
-        out
+        Zeroizing::new(blake3::derive_key(context, self.0.as_ref()))
     }
 }
 

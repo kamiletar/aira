@@ -5,14 +5,14 @@
 //!
 //! # Tables
 //!
-//! - `contacts` — contact list (ML-DSA pubkey → ContactInfo)
-//! - `messages` — message history ((contact_id, timestamp_micros) → StoredMessage)
-//! - `sessions` — ratchet states (contact pubkey → RatchetState, encrypted)
-//! - `pending_messages` — outgoing queue ((contact_id, seq) → EncryptedEnvelope)
-//! - `seen_message_ids` — dedup window (message_id → timestamp_secs, SPEC.md §6.21)
-//! - `settings` — app settings (key → value)
-//! - `groups` — group chat metadata (group_id → GroupInfo)
-//! - `group_messages` — group messages ((group_id, timestamp) → StoredMessage)
+//! - `contacts` — contact list (ML-DSA pubkey -> `ContactInfo`)
+//! - `messages` — message history ((`contact_id`, `timestamp_micros`) -> `StoredMessage`)
+//! - `sessions` — ratchet states (contact pubkey -> `RatchetState`, encrypted)
+//! - `pending_messages` — outgoing queue ((`contact_id`, seq) -> `EncryptedEnvelope`)
+//! - `seen_message_ids` — dedup window (`message_id` -> `timestamp_secs`, SPEC.md §6.21)
+//! - `settings` — app settings (key -> value)
+//! - `groups` — group chat metadata (`group_id` -> `GroupInfo`)
+//! - `group_messages` — group messages ((`group_id`, timestamp) -> `StoredMessage`)
 
 #![deny(unsafe_code)]
 #![warn(clippy::all, clippy::pedantic)]
@@ -23,9 +23,8 @@ use redb::TableDefinition;
 pub const CONTACTS: TableDefinition<&[u8], &[u8]> = TableDefinition::new("contacts");
 pub const MESSAGES: TableDefinition<(u64, u64), &[u8]> = TableDefinition::new("messages");
 pub const SESSIONS: TableDefinition<&[u8], &[u8]> = TableDefinition::new("sessions");
-pub const PENDING: TableDefinition<(&[u8], u64), &[u8]> =
-    TableDefinition::new("pending_messages");
-/// Dedup window: message_id → unix timestamp when seen (SPEC.md §6.21)
+pub const PENDING: TableDefinition<(&[u8], u64), &[u8]> = TableDefinition::new("pending_messages");
+/// Dedup window: `message_id` -> unix timestamp when seen (SPEC.md §6.21)
 pub const SEEN_IDS: TableDefinition<&[u8], u64> = TableDefinition::new("seen_message_ids");
 pub const SETTINGS: TableDefinition<&str, &[u8]> = TableDefinition::new("settings");
 pub const GROUPS: TableDefinition<&[u8], &[u8]> = TableDefinition::new("groups");

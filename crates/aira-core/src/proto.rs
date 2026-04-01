@@ -1,6 +1,6 @@
 //! Wire protocol: message format, payload types, envelopes.
 //!
-//! Serialization: postcard (compact, no_std, deterministic).
+//! Serialization: postcard (compact, `no_std`, deterministic).
 //! See SPEC.md §6 for the full protocol specification.
 
 use serde::{Deserialize, Serialize};
@@ -43,16 +43,29 @@ pub enum PlainPayload {
     LinkPreview(LinkPreviewPayload),
 
     // Message operations
-    Reaction { message_id: [u8; 16], emoji: String },
-    Edit { message_id: [u8; 16], new_text: String },
-    Delete { message_id: [u8; 16] },
+    Reaction {
+        message_id: [u8; 16],
+        emoji: String,
+    },
+    Edit {
+        message_id: [u8; 16],
+        new_text: String,
+    },
+    Delete {
+        message_id: [u8; 16],
+    },
 
     // Status
     Receipt(ReceiptPayload),
     Typing(bool),
 
     // Files
-    FileStart { id: [u8; 16], name: String, size: u64, hash: [u8; 32] },
+    FileStart {
+        id: [u8; 16],
+        name: String,
+        size: u64,
+        hash: [u8; 32],
+    },
 
     // Session management
     /// Full session reset — re-initiates PQXDH handshake (SPEC.md §4.9)
@@ -63,7 +76,10 @@ pub enum PlainPayload {
 
     // Extensibility (SPEC.md §6.16)
     /// Unknown type — old clients show "please update Aira"
-    Unknown { type_id: u16, data: Vec<u8> },
+    Unknown {
+        type_id: u16,
+        data: Vec<u8>,
+    },
 }
 
 /// Wrapper with message metadata.
@@ -134,11 +150,11 @@ pub enum SessionResetReason {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct HandshakeInit {
-    pub identity_pk: Vec<u8>,    // ML-DSA-65 verifying key
-    pub kem_encaps_pk: Vec<u8>,  // ML-KEM-768 encapsulation key
+    pub identity_pk: Vec<u8>,   // ML-DSA-65 verifying key
+    pub kem_encaps_pk: Vec<u8>, // ML-KEM-768 encapsulation key
     pub x25519_pk: [u8; 32],
     pub capabilities: Capabilities,
-    pub signature: Vec<u8>,      // ML-DSA sign of all fields above
+    pub signature: Vec<u8>, // ML-DSA sign of all fields above
 }
 
 #[derive(Debug, Serialize, Deserialize)]

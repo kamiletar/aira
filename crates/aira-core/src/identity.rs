@@ -10,10 +10,13 @@
 /// The user's identity keypair (ML-DSA-65).
 /// Derived from master seed, zeroized on drop.
 ///
-/// TODO(M1): add fields and #[derive(ZeroizeOnDrop)] once ml-dsa types are wired up:
-///   verifying_key: ml_dsa::VerifyingKey<ml_dsa::MlDsa65>,
-///   signing_key: zeroize::Zeroizing<ml_dsa::SigningKey<ml_dsa::MlDsa65>>,
-///   master_seed: zeroize::Zeroizing<[u8; 32]>,
+/// TODO(M1): add fields and `#[derive(ZeroizeOnDrop)]` once ml-dsa types are wired up:
+///
+/// ```text
+/// verifying_key: ml_dsa::VerifyingKey<ml_dsa::MlDsa65>,
+/// signing_key: zeroize::Zeroizing<ml_dsa::SigningKey<ml_dsa::MlDsa65>>,
+/// master_seed: zeroize::Zeroizing<[u8; 32]>,
+/// ```
 pub struct Identity {
     _placeholder: (),
 }
