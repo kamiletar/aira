@@ -1,0 +1,17 @@
+[package]
+name = "aira-bot"
+description = "Aira Bot SDK: build bots for the Aira P2P messenger"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+aira-core = { path = "../aira-core" }
+aira-daemon = { path = "../aira-daemon" }
+aira-storage = { path = "../aira-storage" }
+
+tokio.workspace = true
+postcard.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true

@@ -47,6 +47,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "aira-bot"
+version = "0.2.0"
+dependencies = [
+ "aira-core",
+ "aira-daemon",
+ "aira-storage",
+ "postcard",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "aira-cli"
 version = "0.2.0"
 dependencies = [
@@ -104,6 +118,7 @@ dependencies = [
  "aira-storage",
  "anyhow",
  "blake3",
+ "dirs",
  "iroh",
  "iroh-blobs",
  "postcard",

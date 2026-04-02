@@ -5,13 +5,14 @@ members = [
     "crates/aira-storage",
     "crates/aira-daemon",
     "crates/aira-cli",
+    "crates/aira-bot",
     # "crates/aira-gui",   # v0.2
     # "crates/aira-ffi",   # v0.3
 ]
 resolver = "2"
 
 [workspace.package]
-version = "0.2.0"
+version = "0.2.1"
 edition = "2021"
 authors = ["Aira contributors"]
 license = "MIT OR Apache-2.0"

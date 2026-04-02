@@ -26,3 +26,4 @@ tracing-subscriber.workspace = true
 iroh-blobs.workspace = true
 blake3.workspace = true
 iroh.workspace = true
+dirs.workspace = true

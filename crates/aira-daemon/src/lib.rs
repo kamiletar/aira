@@ -6,4 +6,5 @@
 
 #![warn(clippy::all, clippy::pedantic)]
 
+pub mod client;
 pub mod types;
