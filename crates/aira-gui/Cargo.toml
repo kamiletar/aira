@@ -1,0 +1,59 @@
+[package]
+name = "aira-gui"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Aira — post-quantum P2P messenger: desktop GUI (egui/eframe)"
+default-run = "aira-gui"
+
+[[bin]]
+name = "aira-gui"
+path = "src/main.rs"
+
+[dependencies]
+# GUI framework
+eframe.workspace = true
+egui.workspace = true
+egui_extras.workspace = true
+image.workspace = true
+
+# System tray
+tray-icon.workspace = true
+
+# OS keychain
+keyring.workspace = true
+
+# Native file dialogs
+rfd.workspace = true
+
+# Open files/URLs with OS default app
+open.workspace = true
+
+# Desktop notifications
+notify-rust.workspace = true
+
+# IPC with daemon (reuses DaemonClient)
+aira-daemon = { path = "../aira-daemon" }
+aira-core = { path = "../aira-core" }
+aira-storage = { path = "../aira-storage" }
+
+# Async runtime (for IPC bridge thread)
+tokio = { workspace = true, features = ["rt-multi-thread", "sync", "macros"] }
+
+# Serialization (protocol types)
+postcard.workspace = true
+serde.workspace = true
+
+# Hex encoding for pubkeys display
+hex.workspace = true
+
+# Utilities
+tracing.workspace = true
+tracing-subscriber.workspace = true
+thiserror.workspace = true
+
+[target.'cfg(windows)'.build-dependencies]
+winres = "0.1"

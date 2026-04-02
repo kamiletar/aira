@@ -6,7 +6,7 @@ members = [
     "crates/aira-daemon",
     "crates/aira-cli",
     "crates/aira-bot",
-    # "crates/aira-gui",   # v0.2
+    "crates/aira-gui",
     # "crates/aira-ffi",   # v0.3
 ]
 resolver = "2"
@@ -72,9 +72,15 @@ subtle = "2"
 # ptrs = "0.8"              # TODO(M7): verify crate name/version on crates.io
 # arti-client = "0.27"      # Tor (feature = "tor", M12)
 
-# GUI (v0.2)
-# eframe = "0.29"
-# egui = "0.29"
+# GUI
+eframe = "0.29"
+egui = "0.29"
+egui_extras = { version = "0.29", features = ["image"] }
+tray-icon = "0.19"
+keyring = "3"
+image = { version = "0.25", default-features = false, features = ["png"] }
+rfd = "0.15"
+open = "5"
 
 # FFI биндинги (v0.3)
 # uniffi = "0.28"
