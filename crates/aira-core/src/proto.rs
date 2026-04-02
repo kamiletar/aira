@@ -166,7 +166,7 @@ pub struct HandshakeAck {
     pub signature: Vec<u8>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Capabilities {
     pub min_version: u16,
     pub max_version: u16,

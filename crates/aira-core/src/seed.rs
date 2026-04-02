@@ -18,16 +18,55 @@
 //! The `/0` generation suffix allows key rotation without changing the phrase.
 
 use argon2::{Algorithm, Argon2, Params, Version};
+use sha2::{Digest, Sha256};
 use zeroize::{ZeroizeOnDrop, Zeroizing};
 
+use crate::bip39_wordlist::BIP39_WORDS;
 use crate::proto::AiraError;
 
-/// Argon2id parameters for seed derivation.
-/// m=256MB, t=3 iterations, p=4 lanes.
-const ARGON2_M_COST: u32 = 262_144; // 256 MB in KiB
-const ARGON2_T_COST: u32 = 3;
-const ARGON2_P_COST: u32 = 4;
-const ARGON2_SALT: &[u8] = b"aira-master-v1";
+// ─── Argon2id parameters ─────────────────────────────────────────────────────
+
+/// Desktop Argon2id parameters: m=256MB, t=3 iterations, p=4 lanes.
+const ARGON2_DESKTOP_M_COST: u32 = 262_144; // 256 MB in KiB
+const ARGON2_DESKTOP_T_COST: u32 = 3;
+const ARGON2_DESKTOP_P_COST: u32 = 4;
+const ARGON2_DESKTOP_SALT: &[u8] = b"aira-master-v1-m256";
+
+/// Mobile Argon2id parameters: m=64MB, t=4 iterations, p=4 lanes.
+const ARGON2_MOBILE_M_COST: u32 = 65_536; // 64 MB in KiB
+const ARGON2_MOBILE_T_COST: u32 = 4;
+const ARGON2_MOBILE_P_COST: u32 = 4;
+const ARGON2_MOBILE_SALT: &[u8] = b"aira-master-v1-m64";
+
+/// Platform profile for Argon2id parameters.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Platform {
+    /// Desktop: m=256MB, t=3, p=4
+    Desktop,
+    /// Mobile: m=64MB, t=4, p=4
+    Mobile,
+}
+
+impl Platform {
+    fn argon2_params(self) -> (u32, u32, u32, &'static [u8]) {
+        match self {
+            Self::Desktop => (
+                ARGON2_DESKTOP_M_COST,
+                ARGON2_DESKTOP_T_COST,
+                ARGON2_DESKTOP_P_COST,
+                ARGON2_DESKTOP_SALT,
+            ),
+            Self::Mobile => (
+                ARGON2_MOBILE_M_COST,
+                ARGON2_MOBILE_T_COST,
+                ARGON2_MOBILE_P_COST,
+                ARGON2_MOBILE_SALT,
+            ),
+        }
+    }
+}
+
+// ─── MasterSeed ──────────────────────────────────────────────────────────────
 
 /// The master seed derived from the BIP-39 phrase.
 ///
@@ -39,6 +78,7 @@ pub struct MasterSeed(Zeroizing<[u8; 32]>);
 impl MasterSeed {
     /// Derive a master seed from a 24-word BIP-39 mnemonic phrase.
     ///
+    /// Uses desktop Argon2id parameters (m=256MB).
     /// This is intentionally slow (~1-3s) due to Argon2id memory-hardness.
     ///
     /// # Errors
@@ -46,14 +86,27 @@ impl MasterSeed {
     /// Returns [`AiraError::SeedDerivation`] if the phrase is invalid or
     /// Argon2id hashing fails.
     pub fn from_phrase(phrase: &str) -> Result<Self, AiraError> {
+        Self::from_phrase_with_platform(phrase, Platform::Desktop)
+    }
+
+    /// Derive a master seed with specific platform parameters.
+    ///
+    /// Use [`Platform::Mobile`] for mobile devices with limited RAM.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AiraError::SeedDerivation`] if the phrase is invalid or
+    /// Argon2id hashing fails.
+    pub fn from_phrase_with_platform(phrase: &str, platform: Platform) -> Result<Self, AiraError> {
         let entropy = bip39_decode(phrase)?;
+        let (m_cost, t_cost, p_cost, salt) = platform.argon2_params();
         let mut seed = Zeroizing::new([0u8; 32]);
 
-        let params = Params::new(ARGON2_M_COST, ARGON2_T_COST, ARGON2_P_COST, Some(32))
+        let params = Params::new(m_cost, t_cost, p_cost, Some(32))
             .map_err(|_| AiraError::SeedDerivation("invalid argon2 params".into()))?;
 
         Argon2::new(Algorithm::Argon2id, Version::V0x13, params)
-            .hash_password_into(&entropy, ARGON2_SALT, seed.as_mut())
+            .hash_password_into(&entropy, salt, seed.as_mut())
             .map_err(|e| AiraError::SeedDerivation(e.to_string()))?;
 
         Ok(Self(seed))
@@ -61,16 +114,17 @@ impl MasterSeed {
 
     /// Generate a new random 24-word BIP-39 mnemonic and derive the seed.
     ///
-    /// # Panics
+    /// Returns `(phrase, seed)` so the user can back up the phrase.
     ///
-    /// Panics if the internally generated phrase fails to parse (should never
-    /// happen — indicates a bug in BIP-39 encoding).
-    #[must_use]
-    pub fn generate() -> (String, Self) {
+    /// # Errors
+    ///
+    /// Returns [`AiraError::SeedDerivation`] if Argon2id hashing fails
+    /// (should never happen with valid parameters).
+    pub fn generate() -> Result<(String, Self), AiraError> {
         let entropy: [u8; 32] = rand_entropy();
         let phrase = bip39_encode(&entropy);
-        let seed = Self::from_phrase(&phrase).expect("generated phrase is always valid");
-        (phrase, seed)
+        let seed = Self::from_phrase(&phrase)?;
+        Ok((phrase, seed))
     }
 
     /// Derive a 32-byte subkey for a specific purpose.
@@ -83,37 +137,227 @@ impl MasterSeed {
     }
 }
 
-/// Decode BIP-39 mnemonic to raw entropy bytes.
-fn bip39_decode(_phrase: &str) -> Result<Vec<u8>, AiraError> {
-    // TODO(M1): implement BIP-39 decode using bip39 crate or custom wordlist
-    todo!("implement BIP-39 decode")
+// ─── BIP-39 ──────────────────────────────────────────────────────────────────
+
+/// Encode 32 bytes of entropy into a 24-word BIP-39 mnemonic.
+///
+/// BIP-39 for 256-bit entropy:
+/// - Take SHA-256 of entropy, use first 8 bits as checksum
+/// - Concatenate entropy (256 bits) + checksum (8 bits) = 264 bits
+/// - Split into 24 groups of 11 bits → 24 word indices
+fn bip39_encode(entropy: &[u8; 32]) -> String {
+    let checksum = Sha256::digest(entropy)[0]; // first byte = 8 bits of checksum
+
+    // Build 264-bit value: entropy (256 bits) || checksum (8 bits)
+    // We work with a 33-byte array
+    let mut bits = [0u8; 33];
+    bits[..32].copy_from_slice(entropy);
+    bits[32] = checksum;
+
+    let mut words = Vec::with_capacity(24);
+    for i in 0..24 {
+        let bit_offset = i * 11;
+        let index = extract_11_bits(&bits, bit_offset);
+        words.push(BIP39_WORDS[index as usize]);
+    }
+
+    words.join(" ")
 }
 
-/// Encode raw entropy bytes to BIP-39 mnemonic.
-fn bip39_encode(_entropy: &[u8]) -> String {
-    // TODO(M1): implement BIP-39 encode
-    todo!("implement BIP-39 encode")
+/// Decode a 24-word BIP-39 mnemonic to 32 bytes of entropy.
+///
+/// Validates word count, word presence in wordlist, and checksum.
+///
+/// # Errors
+///
+/// Returns [`AiraError::InvalidSeedPhrase`] if:
+/// - Word count is not 24
+/// - A word is not in the BIP-39 English wordlist
+/// - The checksum does not match
+fn bip39_decode(phrase: &str) -> Result<Vec<u8>, AiraError> {
+    let words: Vec<&str> = phrase.split_whitespace().collect();
+    if words.len() != 24 {
+        return Err(AiraError::InvalidSeedPhrase);
+    }
+
+    // Look up each word's 11-bit index
+    let mut indices = Vec::with_capacity(24);
+    for word in &words {
+        let idx = BIP39_WORDS
+            .iter()
+            .position(|w| w == word)
+            .ok_or(AiraError::InvalidSeedPhrase)?;
+        #[allow(clippy::cast_possible_truncation)]
+        indices.push(idx as u16);
+    }
+
+    // Reconstruct 264 bits (33 bytes) from 24 x 11-bit indices
+    let mut bits = [0u8; 33];
+    for (i, &idx) in indices.iter().enumerate() {
+        set_11_bits(&mut bits, i * 11, idx);
+    }
+
+    // Split: first 32 bytes = entropy, last byte's high bit = checksum (8 bits)
+    let entropy = &bits[..32];
+    let stored_checksum = bits[32];
+
+    // Verify checksum
+    let computed_checksum = Sha256::digest(entropy)[0];
+    if stored_checksum != computed_checksum {
+        return Err(AiraError::InvalidSeedPhrase);
+    }
+
+    Ok(entropy.to_vec())
+}
+
+/// Extract an 11-bit value starting at `bit_offset` from a byte array.
+fn extract_11_bits(data: &[u8], bit_offset: usize) -> u16 {
+    let byte_idx = bit_offset / 8;
+    let bit_idx = bit_offset % 8;
+
+    // Read 3 bytes (max needed for 11 bits spanning byte boundaries)
+    let b0 = u32::from(*data.get(byte_idx).unwrap_or(&0));
+    let b1 = u32::from(*data.get(byte_idx + 1).unwrap_or(&0));
+    let b2 = u32::from(*data.get(byte_idx + 2).unwrap_or(&0));
+
+    let combined = (b0 << 16) | (b1 << 8) | b2;
+    let shift = 24 - 11 - bit_idx;
+
+    #[allow(clippy::cast_possible_truncation)]
+    let result = ((combined >> shift) & 0x7FF) as u16;
+    result
+}
+
+/// Set an 11-bit value at `bit_offset` in a byte array.
+fn set_11_bits(data: &mut [u8], bit_offset: usize, value: u16) {
+    for bit in 0..11 {
+        let src_bit = (value >> (10 - bit)) & 1;
+        let dst_pos = bit_offset + bit;
+        let byte_idx = dst_pos / 8;
+        let bit_idx = 7 - (dst_pos % 8);
+        if byte_idx < data.len() {
+            if src_bit == 1 {
+                data[byte_idx] |= 1 << bit_idx;
+            } else {
+                data[byte_idx] &= !(1 << bit_idx);
+            }
+        }
+    }
 }
 
 /// Generate cryptographically random 32 bytes.
 fn rand_entropy() -> [u8; 32] {
-    // TODO(M1): use rand::thread_rng or getrandom
-    todo!("implement random entropy generation")
+    use rand::RngCore;
+    let mut entropy = [0u8; 32];
+    rand::thread_rng().fill_bytes(&mut entropy);
+    entropy
 }
+
+/// Test helpers — exposed only in test builds for other modules.
+#[cfg(test)]
+pub(crate) mod test_helpers {
+    use super::bip39_encode;
+
+    /// Encode entropy to a BIP-39 phrase (test only).
+    pub fn encode_entropy(entropy: &[u8; 32]) -> String {
+        bip39_encode(entropy)
+    }
+}
+
+// ─── Tests ───────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn derive_is_deterministic() {
-        // Same phrase → same derived keys on any machine
-        // TODO(M1): add actual BIP-39 test vector
+    fn bip39_encode_decode_roundtrip() {
+        let entropy: [u8; 32] = [
+            0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xAA, 0xBB, 0xCC, 0xDD,
+            0xEE, 0xFF, 0x01, 0x23, 0x45, 0x67, 0x89, 0xAB, 0xCD, 0xEF, 0xFE, 0xDC, 0xBA, 0x98,
+            0x76, 0x54, 0x32, 0x10,
+        ];
+        let phrase = bip39_encode(&entropy);
+        let words: Vec<&str> = phrase.split_whitespace().collect();
+        assert_eq!(words.len(), 24, "must produce 24 words");
+
+        let decoded = bip39_decode(&phrase).expect("valid phrase should decode");
+        assert_eq!(
+            decoded.as_slice(),
+            &entropy,
+            "roundtrip must preserve entropy"
+        );
     }
 
     #[test]
-    fn contexts_produce_different_keys() {
-        // Ensure different KDF contexts produce different keys
-        // (key isolation guarantee)
+    fn bip39_random_roundtrip() {
+        let entropy = rand_entropy();
+        let phrase = bip39_encode(&entropy);
+        let decoded = bip39_decode(&phrase).expect("generated phrase should decode");
+        assert_eq!(decoded.as_slice(), &entropy);
+    }
+
+    #[test]
+    fn bip39_invalid_word_rejected() {
+        let phrase = "abandon ability able about above absent absorb abstract absurd abuse access accident account accuse achieve acid acoustic acquire across act action actor actress xyznotaword";
+        assert!(bip39_decode(phrase).is_err());
+    }
+
+    #[test]
+    fn bip39_wrong_word_count_rejected() {
+        assert!(bip39_decode("abandon ability able").is_err());
+        assert!(bip39_decode("").is_err());
+    }
+
+    #[test]
+    fn bip39_bad_checksum_rejected() {
+        let entropy = rand_entropy();
+        let phrase = bip39_encode(&entropy);
+        // Replace last word to corrupt checksum
+        let mut words: Vec<&str> = phrase.split_whitespace().collect();
+        let last = words.last().copied().unwrap_or("abandon");
+        let replacement = if last == "abandon" {
+            "ability"
+        } else {
+            "abandon"
+        };
+        *words.last_mut().expect("non-empty") = replacement;
+        let bad_phrase = words.join(" ");
+        assert!(bip39_decode(&bad_phrase).is_err());
+    }
+
+    #[test]
+    fn derive_produces_different_keys_for_different_contexts() {
+        let entropy = rand_entropy();
+        let phrase = bip39_encode(&entropy);
+        let seed = MasterSeed::from_phrase(&phrase).expect("valid phrase");
+
+        let key_identity = seed.derive("aira/identity/0");
+        let key_x25519 = seed.derive("aira/x25519/0");
+        let key_mlkem = seed.derive("aira/mlkem/0");
+        let key_storage = seed.derive("aira/storage/0");
+
+        // All keys must be different (key isolation guarantee)
+        let ki: &[u8; 32] = &key_identity;
+        let kx: &[u8; 32] = &key_x25519;
+        let km: &[u8; 32] = &key_mlkem;
+        let ks: &[u8; 32] = &key_storage;
+        assert_ne!(ki, kx);
+        assert_ne!(ki, km);
+        assert_ne!(ki, ks);
+        assert_ne!(kx, km);
+        assert_ne!(kx, ks);
+        assert_ne!(km, ks);
+    }
+
+    #[test]
+    fn extract_11_bits_basic() {
+        // 0x7FF = 11 bits all set = 2047
+        let data = [0xFF, 0xE0, 0x00]; // 11111111 11100000 00000000
+        assert_eq!(extract_11_bits(&data, 0), 0x7FF);
+
+        // First word index 0 (all zeros)
+        let data = [0x00, 0x00, 0x00];
+        assert_eq!(extract_11_bits(&data, 0), 0);
     }
 }

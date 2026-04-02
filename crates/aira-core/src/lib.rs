@@ -20,6 +20,7 @@
 #![warn(clippy::all, clippy::pedantic)]
 #![forbid(clippy::unwrap_used)]
 
+mod bip39_wordlist;
 pub mod crypto;
 pub mod handshake;
 pub mod i18n;
