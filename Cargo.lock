@@ -48,7 +48,7 @@ dependencies = [
 
 [[package]]
 name = "aira-cli"
-version = "0.1.5"
+version = "0.2.0"
 dependencies = [
  "aira-core",
  "aira-daemon",
@@ -70,7 +70,7 @@ dependencies = [
 
 [[package]]
 name = "aira-core"
-version = "0.1.5"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "argon2",
@@ -97,7 +97,7 @@ dependencies = [
 
 [[package]]
 name = "aira-daemon"
-version = "0.1.5"
+version = "0.2.0"
 dependencies = [
  "aira-core",
  "aira-net",
@@ -118,7 +118,7 @@ dependencies = [
 
 [[package]]
 name = "aira-net"
-version = "0.1.5"
+version = "0.2.0"
 dependencies = [
  "aira-core",
  "anyhow",
@@ -139,7 +139,7 @@ dependencies = [
 
 [[package]]
 name = "aira-storage"
-version = "0.1.5"
+version = "0.2.0"
 dependencies = [
  "aira-core",
  "anyhow",

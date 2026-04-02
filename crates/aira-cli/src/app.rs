@@ -86,6 +86,19 @@ pub struct App {
     pub running: bool,
     /// Chat scroll offset (0 = bottom).
     pub scroll_offset: u16,
+
+    // ─── Group state (SPEC.md §12) ──────────────────────────────────────
+    /// All groups (from daemon).
+    pub groups: Vec<aira_daemon::types::GroupInfoResp>,
+    /// Currently active group (None = 1-on-1 mode).
+    pub active_group: Option<[u8; 32]>,
+    /// Group message cache (key: `group_id`).
+    pub group_messages: HashMap<[u8; 32], Vec<DisplayMessage>>,
+    /// Unread message count per group.
+    pub group_unread: HashMap<[u8; 32], u32>,
+    /// Selected group index in the groups list.
+    #[allow(dead_code)]
+    pub selected_group: usize,
 }
 
 impl App {
@@ -108,6 +121,11 @@ impl App {
             status_message: None,
             running: true,
             scroll_offset: 0,
+            groups: Vec::new(),
+            active_group: None,
+            group_messages: HashMap::new(),
+            group_unread: HashMap::new(),
+            selected_group: 0,
         }
     }
 
@@ -232,6 +250,39 @@ impl App {
                 self.file_transfers.remove(&id);
                 self.status_message = Some(format!("File error: {error}"));
             }
+            DaemonEvent::GroupMessageReceived {
+                group_id,
+                from: _,
+                payload,
+            } => {
+                if let Some(msg) = decode_display_message(&payload, false) {
+                    self.group_messages.entry(group_id).or_default().push(msg);
+                    if self.active_group != Some(group_id) {
+                        *self.group_unread.entry(group_id).or_insert(0) += 1;
+                    }
+                }
+            }
+            DaemonEvent::GroupMemberJoined { group_id, member } => {
+                let member_hex = hex::encode(&member[..4.min(member.len())]);
+                self.status_message = Some(format!(
+                    "Group {}: member {member_hex}... joined",
+                    hex::encode(&group_id[..4])
+                ));
+            }
+            DaemonEvent::GroupMemberLeft { group_id, member } => {
+                let member_hex = hex::encode(&member[..4.min(member.len())]);
+                self.status_message = Some(format!(
+                    "Group {}: member {member_hex}... left",
+                    hex::encode(&group_id[..4])
+                ));
+            }
+            DaemonEvent::GroupInvite {
+                group_id: _,
+                name,
+                invited_by: _,
+            } => {
+                self.status_message = Some(format!("Group invite: {name}"));
+            }
         }
     }
 
@@ -351,6 +402,9 @@ fn payload_to_text(payload: &PlainPayload) -> String {
         }
         PlainPayload::SessionReset { reason, .. } => {
             format!("[session reset: {reason:?}]")
+        }
+        PlainPayload::GroupControl(ctrl) => {
+            format!("[group control: {ctrl:?}]")
         }
         PlainPayload::Unknown { type_id, .. } => {
             format!("[unknown message type {type_id} — please update Aira]")

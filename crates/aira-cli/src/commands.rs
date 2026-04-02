@@ -49,6 +49,20 @@ pub enum CliCommand {
     Lang { code: String },
     /// `/search <query>` — search message history.
     Search { query: String },
+    // ─── Group commands (SPEC.md §12) ──────────────────────────────────
+    /// `/group create <name> <member1> [member2...]` — create a new group.
+    GroupCreate { name: String, members: Vec<String> },
+    /// `/group list` — list all groups.
+    GroupList,
+    /// `/group info` — show current group info.
+    GroupInfo,
+    /// `/group add <member>` — add member to current group (Admin only).
+    GroupAdd { member: String },
+    /// `/group remove <member>` — remove member from current group (Admin only).
+    GroupRemove { member: String },
+    /// `/group leave` — leave the current group.
+    GroupLeave,
+
     /// Plain text message to send to the current contact.
     Message(String),
 }
@@ -61,6 +75,7 @@ const COMMAND_NAMES: &[&str] = &[
     "disappear",
     "export",
     "file",
+    "group",
     "import",
     "info",
     "lang",
@@ -73,6 +88,9 @@ const COMMAND_NAMES: &[&str] = &[
     "unblock",
     "verify",
 ];
+
+/// Subcommand names for `/group`.
+const GROUP_SUBCOMMANDS: &[&str] = &["create", "list", "info", "add", "remove", "leave"];
 
 /// Parse user input into a `CliCommand`.
 ///
@@ -228,7 +246,55 @@ pub fn parse(input: &str) -> Result<CliCommand, String> {
                 query: args.to_string(),
             })
         }
+        "group" => parse_group(args),
         _ => Err(format!("unknown command: /{cmd}")),
+    }
+}
+
+/// Parse `/group <subcommand> [args...]`.
+fn parse_group(args: &str) -> Result<CliCommand, String> {
+    if args.is_empty() {
+        return Err("usage: /group <create|list|info|add|remove|leave>".into());
+    }
+
+    let mut parts = args.splitn(2, ' ');
+    let sub = parts.next().unwrap_or("");
+    let sub_args = parts.next().unwrap_or("").trim();
+
+    match sub {
+        "create" => {
+            if sub_args.is_empty() {
+                return Err("usage: /group create <name> <member1> [member2...]".into());
+            }
+            let mut parts = sub_args.splitn(2, ' ');
+            let name = parts.next().unwrap_or("").to_string();
+            let members_str = parts.next().unwrap_or("");
+            if members_str.is_empty() {
+                return Err("usage: /group create <name> <member1> [member2...]".into());
+            }
+            let members: Vec<String> = members_str.split_whitespace().map(String::from).collect();
+            Ok(CliCommand::GroupCreate { name, members })
+        }
+        "list" => Ok(CliCommand::GroupList),
+        "info" => Ok(CliCommand::GroupInfo),
+        "add" => {
+            if sub_args.is_empty() {
+                return Err("usage: /group add <member>".into());
+            }
+            Ok(CliCommand::GroupAdd {
+                member: sub_args.to_string(),
+            })
+        }
+        "remove" => {
+            if sub_args.is_empty() {
+                return Err("usage: /group remove <member>".into());
+            }
+            Ok(CliCommand::GroupRemove {
+                member: sub_args.to_string(),
+            })
+        }
+        "leave" => Ok(CliCommand::GroupLeave),
+        _ => Err(format!("unknown group subcommand: {sub}")),
     }
 }
 
@@ -243,6 +309,16 @@ pub fn completions(prefix: &str) -> Vec<String> {
     }
 
     let partial = &prefix[1..];
+
+    // Handle `/group <sub>` completion
+    if let Some(sub_partial) = partial.strip_prefix("group ") {
+        return GROUP_SUBCOMMANDS
+            .iter()
+            .filter(|name| name.starts_with(sub_partial))
+            .map(|name| format!("/group {name}"))
+            .collect();
+    }
+
     COMMAND_NAMES
         .iter()
         .filter(|name| name.starts_with(partial))
@@ -496,5 +572,94 @@ mod tests {
     fn parse_profile_no_field() {
         let cmd = parse("/profile").unwrap();
         assert_eq!(cmd, CliCommand::Profile { field: None });
+    }
+
+    // ─── Group command tests ────────────────────────────────────────────
+
+    #[test]
+    fn parse_group_create() {
+        let cmd = parse("/group create TestGroup abc123 def456").unwrap();
+        assert_eq!(
+            cmd,
+            CliCommand::GroupCreate {
+                name: "TestGroup".into(),
+                members: vec!["abc123".into(), "def456".into()],
+            }
+        );
+    }
+
+    #[test]
+    fn parse_group_create_missing_members() {
+        assert!(parse("/group create TestGroup").is_err());
+    }
+
+    #[test]
+    fn parse_group_create_missing_all() {
+        assert!(parse("/group create").is_err());
+    }
+
+    #[test]
+    fn parse_group_list() {
+        assert_eq!(parse("/group list").unwrap(), CliCommand::GroupList);
+    }
+
+    #[test]
+    fn parse_group_info() {
+        assert_eq!(parse("/group info").unwrap(), CliCommand::GroupInfo);
+    }
+
+    #[test]
+    fn parse_group_add() {
+        let cmd = parse("/group add abc123").unwrap();
+        assert_eq!(
+            cmd,
+            CliCommand::GroupAdd {
+                member: "abc123".into(),
+            }
+        );
+    }
+
+    #[test]
+    fn parse_group_add_missing() {
+        assert!(parse("/group add").is_err());
+    }
+
+    #[test]
+    fn parse_group_remove() {
+        let cmd = parse("/group remove abc123").unwrap();
+        assert_eq!(
+            cmd,
+            CliCommand::GroupRemove {
+                member: "abc123".into(),
+            }
+        );
+    }
+
+    #[test]
+    fn parse_group_leave() {
+        assert_eq!(parse("/group leave").unwrap(), CliCommand::GroupLeave);
+    }
+
+    #[test]
+    fn parse_group_no_subcommand() {
+        assert!(parse("/group").is_err());
+    }
+
+    #[test]
+    fn parse_group_unknown_subcommand() {
+        assert!(parse("/group foobar").is_err());
+    }
+
+    #[test]
+    fn completions_group_sub() {
+        let comps = completions("/group c");
+        assert!(comps.contains(&"/group create".to_string()));
+        assert!(!comps.contains(&"/group list".to_string()));
+    }
+
+    #[test]
+    fn completions_group_all_subs() {
+        let comps = completions("/group ");
+        assert_eq!(comps.len(), GROUP_SUBCOMMANDS.len());
     }
 }

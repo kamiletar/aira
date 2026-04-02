@@ -68,6 +68,55 @@ pub enum DaemonRequest {
     },
     /// Graceful shutdown.
     Shutdown,
+
+    // ─── Group operations (SPEC.md §12) ─────────────────────────────────
+    /// Create a new group.
+    CreateGroup {
+        /// Group display name.
+        name: String,
+        /// ML-DSA public keys of initial members.
+        members: Vec<Vec<u8>>,
+    },
+    /// Get all groups.
+    GetGroups,
+    /// Get info about a specific group.
+    GetGroupInfo {
+        /// Group ID (32 bytes).
+        group_id: [u8; 32],
+    },
+    /// Send a text message to a group.
+    SendGroupMessage {
+        /// Group ID (32 bytes).
+        group_id: [u8; 32],
+        /// Message text.
+        text: String,
+    },
+    /// Get group message history.
+    GetGroupHistory {
+        /// Group ID (32 bytes).
+        group_id: [u8; 32],
+        /// Maximum number of messages to return.
+        limit: u32,
+    },
+    /// Add a member to a group (Admin only).
+    GroupAddMember {
+        /// Group ID (32 bytes).
+        group_id: [u8; 32],
+        /// New member's ML-DSA public key.
+        member: Vec<u8>,
+    },
+    /// Remove a member from a group (Admin only).
+    GroupRemoveMember {
+        /// Group ID (32 bytes).
+        group_id: [u8; 32],
+        /// Member's ML-DSA public key to remove.
+        member: Vec<u8>,
+    },
+    /// Leave a group.
+    LeaveGroup {
+        /// Group ID (32 bytes).
+        group_id: [u8; 32],
+    },
 }
 
 /// Response from daemon to client.
@@ -83,6 +132,45 @@ pub enum DaemonResponse {
     Contacts(Vec<aira_storage::ContactInfo>),
     /// Our own public key bytes.
     MyAddress(Vec<u8>),
+
+    // ─── Group responses ────────────────────────────────────────────────
+    /// Group created successfully.
+    GroupCreated {
+        /// The new group's ID (32 bytes).
+        group_id: [u8; 32],
+    },
+    /// Single group info.
+    GroupInfo(GroupInfoResp),
+    /// List of all groups.
+    Groups(Vec<GroupInfoResp>),
+    /// Group message history.
+    GroupHistory(Vec<aira_storage::StoredMessage>),
+}
+
+/// Group information returned in daemon responses.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GroupInfoResp {
+    /// Group ID (32 bytes).
+    pub id: [u8; 32],
+    /// Group display name.
+    pub name: String,
+    /// Member public keys with roles.
+    pub members: Vec<GroupMemberResp>,
+    /// Creator's public key.
+    pub created_by: Vec<u8>,
+    /// Unix timestamp (seconds) of creation.
+    pub created_at: u64,
+}
+
+/// Group member info in daemon responses.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GroupMemberResp {
+    /// Member's ML-DSA public key.
+    pub pubkey: Vec<u8>,
+    /// "admin" or "member".
+    pub role: String,
+    /// Unix timestamp (seconds) when joined.
+    pub joined_at: u64,
 }
 
 /// Wrapper for all messages sent from daemon to client over IPC.
@@ -134,6 +222,40 @@ pub enum DaemonEvent {
         id: [u8; 16],
         /// Error description.
         error: String,
+    },
+
+    // ─── Group events (SPEC.md §12) ─────────────────────────────────────
+    /// A group message was received.
+    GroupMessageReceived {
+        /// Group ID (32 bytes).
+        group_id: [u8; 32],
+        /// Sender's ML-DSA public key.
+        from: Vec<u8>,
+        /// Serialized `PlainPayload` bytes.
+        payload: Vec<u8>,
+    },
+    /// A member joined a group.
+    GroupMemberJoined {
+        /// Group ID (32 bytes).
+        group_id: [u8; 32],
+        /// New member's ML-DSA public key.
+        member: Vec<u8>,
+    },
+    /// A member left a group.
+    GroupMemberLeft {
+        /// Group ID (32 bytes).
+        group_id: [u8; 32],
+        /// Member's ML-DSA public key.
+        member: Vec<u8>,
+    },
+    /// A new group was created (we were invited).
+    GroupInvite {
+        /// Group ID (32 bytes).
+        group_id: [u8; 32],
+        /// Group name.
+        name: String,
+        /// Inviter's ML-DSA public key.
+        invited_by: Vec<u8>,
     },
 }
 
@@ -262,6 +384,142 @@ mod tests {
         match decoded {
             ServerMessage::Event(DaemonEvent::ContactOnline(pk)) => {
                 assert_eq!(pk.len(), 32);
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn create_group_request_roundtrip() {
+        let req = DaemonRequest::CreateGroup {
+            name: "Test Group".into(),
+            members: vec![vec![0xAA; 32], vec![0xBB; 32]],
+        };
+        let bytes = postcard::to_allocvec(&req).expect("serialize");
+        let decoded: DaemonRequest = postcard::from_bytes(&bytes).expect("deserialize");
+        match decoded {
+            DaemonRequest::CreateGroup { name, members } => {
+                assert_eq!(name, "Test Group");
+                assert_eq!(members.len(), 2);
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn send_group_message_request_roundtrip() {
+        let req = DaemonRequest::SendGroupMessage {
+            group_id: [0x11; 32],
+            text: "hello group".into(),
+        };
+        let bytes = postcard::to_allocvec(&req).expect("serialize");
+        let decoded: DaemonRequest = postcard::from_bytes(&bytes).expect("deserialize");
+        match decoded {
+            DaemonRequest::SendGroupMessage { group_id, text } => {
+                assert_eq!(group_id, [0x11; 32]);
+                assert_eq!(text, "hello group");
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn group_created_response_roundtrip() {
+        let resp = DaemonResponse::GroupCreated {
+            group_id: [0xFF; 32],
+        };
+        let bytes = postcard::to_allocvec(&resp).expect("serialize");
+        let decoded: DaemonResponse = postcard::from_bytes(&bytes).expect("deserialize");
+        match decoded {
+            DaemonResponse::GroupCreated { group_id } => {
+                assert_eq!(group_id, [0xFF; 32]);
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn group_info_response_roundtrip() {
+        let resp = DaemonResponse::GroupInfo(GroupInfoResp {
+            id: [0x22; 32],
+            name: "My Group".into(),
+            members: vec![GroupMemberResp {
+                pubkey: vec![0xAA; 32],
+                role: "admin".into(),
+                joined_at: 1_700_000_000,
+            }],
+            created_by: vec![0xAA; 32],
+            created_at: 1_700_000_000,
+        });
+        let bytes = postcard::to_allocvec(&resp).expect("serialize");
+        let decoded: DaemonResponse = postcard::from_bytes(&bytes).expect("deserialize");
+        match decoded {
+            DaemonResponse::GroupInfo(info) => {
+                assert_eq!(info.name, "My Group");
+                assert_eq!(info.members.len(), 1);
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn group_message_received_event_roundtrip() {
+        let event = DaemonEvent::GroupMessageReceived {
+            group_id: [0x33; 32],
+            from: vec![0xBB; 32],
+            payload: b"content".to_vec(),
+        };
+        let bytes = postcard::to_allocvec(&event).expect("serialize");
+        let decoded: DaemonEvent = postcard::from_bytes(&bytes).expect("deserialize");
+        match decoded {
+            DaemonEvent::GroupMessageReceived {
+                group_id,
+                from,
+                payload,
+            } => {
+                assert_eq!(group_id, [0x33; 32]);
+                assert_eq!(from, vec![0xBB; 32]);
+                assert_eq!(payload, b"content");
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn group_member_joined_event_roundtrip() {
+        let event = DaemonEvent::GroupMemberJoined {
+            group_id: [0x44; 32],
+            member: vec![0xCC; 32],
+        };
+        let bytes = postcard::to_allocvec(&event).expect("serialize");
+        let decoded: DaemonEvent = postcard::from_bytes(&bytes).expect("deserialize");
+        match decoded {
+            DaemonEvent::GroupMemberJoined { group_id, member } => {
+                assert_eq!(group_id, [0x44; 32]);
+                assert_eq!(member, vec![0xCC; 32]);
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn group_invite_event_roundtrip() {
+        let event = DaemonEvent::GroupInvite {
+            group_id: [0x55; 32],
+            name: "Group Alpha".into(),
+            invited_by: vec![0xDD; 32],
+        };
+        let bytes = postcard::to_allocvec(&event).expect("serialize");
+        let decoded: DaemonEvent = postcard::from_bytes(&bytes).expect("deserialize");
+        match decoded {
+            DaemonEvent::GroupInvite {
+                group_id,
+                name,
+                invited_by,
+            } => {
+                assert_eq!(group_id, [0x55; 32]);
+                assert_eq!(name, "Group Alpha");
+                assert_eq!(invited_by, vec![0xDD; 32]);
             }
             _ => panic!("wrong variant"),
         }

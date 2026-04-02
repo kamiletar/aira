@@ -19,7 +19,7 @@ mod transfers;
 
 use aira_daemon::types;
 use transfers::TransferManager;
-use types::{DaemonEvent, DaemonRequest, DaemonResponse};
+use types::{DaemonEvent, DaemonRequest, DaemonResponse, GroupInfoResp, GroupMemberResp};
 
 /// Default data directory.
 fn data_dir() -> PathBuf {
@@ -191,6 +191,7 @@ async fn main() -> Result<()> {
 }
 
 /// Handle a single IPC request.
+#[allow(clippy::too_many_lines)]
 fn handle_request(
     storage: &aira_storage::Storage,
     blob_store: &aira_net::blobs::BlobStore,
@@ -271,7 +272,212 @@ fn handle_request(
             let _ = shutdown_tx.try_send(());
             DaemonResponse::Ok
         }
+
+        // ─── Group operations (SPEC.md §12) ─────────────────────────────
+        DaemonRequest::CreateGroup { name, members } => {
+            handle_create_group(storage, &name, &members)
+        }
+        DaemonRequest::GetGroups => match aira_storage::groups::list_groups(storage) {
+            Ok(groups) => {
+                let resp: Vec<_> = groups.iter().map(group_info_to_resp).collect();
+                DaemonResponse::Groups(resp)
+            }
+            Err(e) => DaemonResponse::Error(e.to_string()),
+        },
+        DaemonRequest::GetGroupInfo { group_id } => {
+            match aira_storage::groups::get_group(storage, &group_id) {
+                Ok(group) => DaemonResponse::GroupInfo(group_info_to_resp(&group)),
+                Err(e) => DaemonResponse::Error(e.to_string()),
+            }
+        }
+        DaemonRequest::SendGroupMessage { group_id, text } => {
+            handle_send_group_message(storage, &group_id, &text)
+        }
+        DaemonRequest::GetGroupHistory { group_id, limit } => {
+            match aira_storage::groups::get_group_history(storage, &group_id, limit) {
+                Ok(messages) => DaemonResponse::GroupHistory(messages),
+                Err(e) => DaemonResponse::Error(e.to_string()),
+            }
+        }
+        DaemonRequest::GroupAddMember { group_id, member } => {
+            handle_group_add_member(storage, &group_id, &member)
+        }
+        DaemonRequest::GroupRemoveMember { group_id, member } => {
+            handle_group_remove_member(storage, &group_id, &member)
+        }
+        DaemonRequest::LeaveGroup { group_id } => handle_leave_group(storage, &group_id),
     }
+}
+
+/// Convert storage `GroupInfo` to daemon response `GroupInfoResp`.
+fn group_info_to_resp(group: &aira_storage::GroupInfo) -> GroupInfoResp {
+    GroupInfoResp {
+        id: group.id,
+        name: group.name.clone(),
+        members: group
+            .members
+            .iter()
+            .map(|m| GroupMemberResp {
+                pubkey: m.pubkey.clone(),
+                role: match m.role {
+                    aira_storage::GroupRole::Admin => "admin".into(),
+                    aira_storage::GroupRole::Member => "member".into(),
+                },
+                joined_at: m.joined_at,
+            })
+            .collect(),
+        created_by: group.created_by.clone(),
+        created_at: group.created_at,
+    }
+}
+
+/// Handle `CreateGroup` request.
+fn handle_create_group(
+    storage: &aira_storage::Storage,
+    name: &str,
+    member_pubkeys: &[Vec<u8>],
+) -> DaemonResponse {
+    if member_pubkeys.len() + 1 > aira_core::group::MAX_GROUP_MEMBERS {
+        return DaemonResponse::Error(format!(
+            "too many members (max {})",
+            aira_core::group::MAX_GROUP_MEMBERS
+        ));
+    }
+
+    let mut group_id = [0u8; 32];
+    rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut group_id);
+
+    let now = now_secs();
+
+    // Creator is Admin
+    let mut members = vec![aira_storage::GroupMemberInfo {
+        pubkey: vec![], // TODO: fill with our own pubkey when identity is wired
+        role: aira_storage::GroupRole::Admin,
+        joined_at: now,
+    }];
+
+    // Other members start as Member
+    for pk in member_pubkeys {
+        members.push(aira_storage::GroupMemberInfo {
+            pubkey: pk.clone(),
+            role: aira_storage::GroupRole::Member,
+            joined_at: now,
+        });
+    }
+
+    let group = aira_storage::GroupInfo {
+        id: group_id,
+        name: name.to_string(),
+        members,
+        created_by: vec![], // TODO: our pubkey
+        created_at: now,
+    };
+
+    match aira_storage::groups::create_group(storage, &group) {
+        Ok(()) => {
+            // TODO: distribute GroupControl::CreateGroup + Sender Keys to members via 1-on-1
+            DaemonResponse::GroupCreated { group_id }
+        }
+        Err(e) => DaemonResponse::Error(e.to_string()),
+    }
+}
+
+/// Handle `SendGroupMessage` request.
+fn handle_send_group_message(
+    storage: &aira_storage::Storage,
+    group_id: &[u8; 32],
+    text: &str,
+) -> DaemonResponse {
+    // Verify group exists
+    if aira_storage::groups::get_group(storage, group_id).is_err() {
+        return DaemonResponse::Error("group not found".into());
+    }
+
+    let msg = aira_storage::StoredMessage {
+        id: rand_id(),
+        sender_is_self: true,
+        payload_bytes: text.as_bytes().to_vec(),
+        timestamp_micros: now_micros(),
+        ttl_secs: None,
+        read_at: None,
+        expires_at: None,
+    };
+
+    match aira_storage::groups::store_group_message(storage, group_id, &msg) {
+        Ok(()) => {
+            // TODO: encrypt with SenderKey and fan-out to all members via 1-on-1
+            DaemonResponse::Ok
+        }
+        Err(e) => DaemonResponse::Error(e.to_string()),
+    }
+}
+
+/// Handle `GroupAddMember` request.
+fn handle_group_add_member(
+    storage: &aira_storage::Storage,
+    group_id: &[u8; 32],
+    member_pubkey: &[u8],
+) -> DaemonResponse {
+    let group = match aira_storage::groups::get_group(storage, group_id) {
+        Ok(g) => g,
+        Err(e) => return DaemonResponse::Error(e.to_string()),
+    };
+
+    if group.members.len() >= aira_core::group::MAX_GROUP_MEMBERS {
+        return DaemonResponse::Error(format!(
+            "group is full (max {} members)",
+            aira_core::group::MAX_GROUP_MEMBERS
+        ));
+    }
+
+    // TODO: verify caller is Admin (requires identity integration)
+
+    let now = now_secs();
+    let member = aira_storage::GroupMemberInfo {
+        pubkey: member_pubkey.to_vec(),
+        role: aira_storage::GroupRole::Member,
+        joined_at: now,
+    };
+
+    match aira_storage::groups::add_member(storage, group_id, member) {
+        Ok(()) => {
+            // TODO: distribute Sender Keys to new member, notify group
+            DaemonResponse::Ok
+        }
+        Err(e) => DaemonResponse::Error(e.to_string()),
+    }
+}
+
+/// Handle `GroupRemoveMember` request.
+fn handle_group_remove_member(
+    storage: &aira_storage::Storage,
+    group_id: &[u8; 32],
+    member_pubkey: &[u8],
+) -> DaemonResponse {
+    // TODO: verify caller is Admin
+    match aira_storage::groups::remove_member(storage, group_id, member_pubkey) {
+        Ok(()) => {
+            // TODO: distribute RemoveMember + trigger SenderKey rotation
+            DaemonResponse::Ok
+        }
+        Err(e) => DaemonResponse::Error(e.to_string()),
+    }
+}
+
+/// Handle `LeaveGroup` request.
+fn handle_leave_group(storage: &aira_storage::Storage, group_id: &[u8; 32]) -> DaemonResponse {
+    // TODO: send GroupControl::Leave to all members, remove our sender key
+    match aira_storage::groups::remove_group(storage, group_id) {
+        Ok(()) => DaemonResponse::Ok,
+        Err(e) => DaemonResponse::Error(e.to_string()),
+    }
+}
+
+fn now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
 }
 
 /// Handle a `SendFile` request: validate, import to blob store, track transfer.

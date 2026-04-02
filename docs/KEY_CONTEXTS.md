@@ -1,0 +1,25 @@
+# KDF Key Contexts — Aira
+
+Все контексты для `blake3::derive_key()`. Каждый ключ используется ровно в одном контексте (Key Isolation).
+
+## Master Seed Derivation
+
+| Контекст | Назначение | Крейт |
+|----------|-----------|-------|
+| `aira/storage/0` | Storage encryption key | aira-storage |
+
+## Double Ratchet (1-on-1)
+
+| Контекст | Назначение | Крейт |
+|----------|-----------|-------|
+| `aira/chain/advance` | Symmetric chain key advancement | aira-core/ratchet |
+| `aira/chain/message-key` | Per-message encryption key | aira-core/ratchet |
+| `aira/ratchet/root` | Root key after DH ratchet step | aira-core/ratchet |
+| `aira/ratchet/chain` | Chain key after DH ratchet step | aira-core/ratchet |
+
+## Group Sender Keys
+
+| Контекст | Назначение | Крейт |
+|----------|-----------|-------|
+| `aira/group/chain-advance` | Group sender key chain advancement | aira-core/group |
+| `aira/group/message-key` | Per-message group encryption key | aira-core/group |

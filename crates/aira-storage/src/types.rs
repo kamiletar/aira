@@ -45,6 +45,44 @@ pub struct StoredMessage {
     pub expires_at: Option<u64>,
 }
 
+/// Role of a member within a group (matches `aira_core::group_proto::GroupRole`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum GroupRole {
+    /// Can add/remove members, manage the group.
+    Admin,
+    /// Can read/write messages only.
+    Member,
+}
+
+/// Information about a group member.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GroupMemberInfo {
+    /// Member's ML-DSA public key.
+    pub pubkey: Vec<u8>,
+    /// Member's role in the group.
+    pub role: GroupRole,
+    /// Unix timestamp (seconds) when the member joined.
+    pub joined_at: u64,
+}
+
+/// Group metadata stored in the `groups` table.
+///
+/// Key: `group_id` (32 bytes).
+/// Value: `GroupInfo` serialized with postcard, then encrypted.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GroupInfo {
+    /// Group identifier (32 random bytes).
+    pub id: [u8; 32],
+    /// Group display name.
+    pub name: String,
+    /// Group members.
+    pub members: Vec<GroupMemberInfo>,
+    /// Creator's ML-DSA public key.
+    pub created_by: Vec<u8>,
+    /// Unix timestamp (seconds) when the group was created.
+    pub created_at: u64,
+}
+
 /// Compute a deterministic `contact_id` (u64) from a public key.
 ///
 /// Uses `BLAKE3(pubkey)[0..8]` interpreted as little-endian u64.

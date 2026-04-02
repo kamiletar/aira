@@ -22,6 +22,8 @@
 
 mod bip39_wordlist;
 pub mod crypto;
+pub mod group;
+pub mod group_proto;
 pub mod handshake;
 pub mod i18n;
 pub mod identity;

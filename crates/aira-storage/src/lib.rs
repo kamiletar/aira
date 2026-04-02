@@ -26,13 +26,14 @@ pub mod backup;
 pub mod contacts;
 pub mod dedup;
 pub mod encrypted;
+pub mod groups;
 pub mod messages;
 pub mod pending;
 pub mod sessions;
 pub mod settings;
 pub mod types;
 
-pub use types::{contact_id, ContactInfo, StoredMessage};
+pub use types::{contact_id, ContactInfo, GroupInfo, GroupMemberInfo, GroupRole, StoredMessage};
 
 // ─── Table definitions ──────────────────────────────────────────────────────
 
@@ -73,6 +74,8 @@ pub enum StorageError {
     Serialization(String),
     #[error("contact not found")]
     ContactNotFound,
+    #[error("group not found")]
+    GroupNotFound,
     #[error("backup error: {0}")]
     Backup(String),
     #[error("I/O error: {0}")]

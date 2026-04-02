@@ -434,6 +434,131 @@ async fn execute_command(app: &mut App, client: &DaemonClient, cmd: CliCommand) 
         CliCommand::Search { query } => {
             app.set_status(format!("Search: {query} (local search coming soon)"));
         }
+        // ─── Group commands (SPEC.md §12) ─────────────────────────────
+        CliCommand::GroupCreate { name, members } => {
+            let member_pks: Vec<Vec<u8>> = members
+                .iter()
+                .map(|m| hex::decode(m).unwrap_or_else(|_| m.as_bytes().to_vec()))
+                .collect();
+            match client
+                .request(&DaemonRequest::CreateGroup {
+                    name: name.clone(),
+                    members: member_pks,
+                })
+                .await
+            {
+                Ok(DaemonResponse::GroupCreated { group_id }) => {
+                    let gid_hex = hex::encode(&group_id[..4]);
+                    app.set_status(format!("Group '{name}' created ({gid_hex}...)"));
+                    // Refresh groups
+                    if let Ok(DaemonResponse::Groups(groups)) =
+                        client.request(&DaemonRequest::GetGroups).await
+                    {
+                        app.groups = groups;
+                    }
+                }
+                Ok(DaemonResponse::Error(e)) => app.set_status(format!("Error: {e}")),
+                _ => {}
+            }
+        }
+        CliCommand::GroupList => match client.request(&DaemonRequest::GetGroups).await {
+            Ok(DaemonResponse::Groups(groups)) => {
+                app.groups.clone_from(&groups);
+                let names: Vec<_> = groups.iter().map(|g| g.name.as_str()).collect();
+                app.set_status(format!("Groups: {}", names.join(", ")));
+            }
+            Ok(DaemonResponse::Error(e)) => app.set_status(format!("Error: {e}")),
+            _ => {}
+        },
+        CliCommand::GroupInfo => {
+            if let Some(gid) = app.active_group {
+                match client
+                    .request(&DaemonRequest::GetGroupInfo { group_id: gid })
+                    .await
+                {
+                    Ok(DaemonResponse::GroupInfo(info)) => {
+                        let member_list: Vec<_> = info
+                            .members
+                            .iter()
+                            .map(|m| {
+                                let pk_hex = hex::encode(&m.pubkey[..4.min(m.pubkey.len())]);
+                                format!("{pk_hex}...({role})", role = m.role)
+                            })
+                            .collect();
+                        app.set_status(format!(
+                            "{} | {} members: {}",
+                            info.name,
+                            info.members.len(),
+                            member_list.join(", ")
+                        ));
+                    }
+                    Ok(DaemonResponse::Error(e)) => app.set_status(format!("Error: {e}")),
+                    _ => {}
+                }
+            } else {
+                app.set_status("No active group. Select a group first.");
+            }
+        }
+        CliCommand::GroupAdd { member } => {
+            if let Some(gid) = app.active_group {
+                let pk = hex::decode(&member).unwrap_or_else(|_| member.as_bytes().to_vec());
+                match client
+                    .request(&DaemonRequest::GroupAddMember {
+                        group_id: gid,
+                        member: pk,
+                    })
+                    .await
+                {
+                    Ok(DaemonResponse::Ok) => app.set_status(format!("Added {member} to group.")),
+                    Ok(DaemonResponse::Error(e)) => app.set_status(format!("Error: {e}")),
+                    _ => {}
+                }
+            } else {
+                app.set_status("No active group.");
+            }
+        }
+        CliCommand::GroupRemove { member } => {
+            if let Some(gid) = app.active_group {
+                let pk = hex::decode(&member).unwrap_or_else(|_| member.as_bytes().to_vec());
+                match client
+                    .request(&DaemonRequest::GroupRemoveMember {
+                        group_id: gid,
+                        member: pk,
+                    })
+                    .await
+                {
+                    Ok(DaemonResponse::Ok) => {
+                        app.set_status(format!("Removed {member} from group."));
+                    }
+                    Ok(DaemonResponse::Error(e)) => app.set_status(format!("Error: {e}")),
+                    _ => {}
+                }
+            } else {
+                app.set_status("No active group.");
+            }
+        }
+        CliCommand::GroupLeave => {
+            if let Some(gid) = app.active_group {
+                match client
+                    .request(&DaemonRequest::LeaveGroup { group_id: gid })
+                    .await
+                {
+                    Ok(DaemonResponse::Ok) => {
+                        app.active_group = None;
+                        app.set_status("Left group.");
+                        if let Ok(DaemonResponse::Groups(groups)) =
+                            client.request(&DaemonRequest::GetGroups).await
+                        {
+                            app.groups = groups;
+                        }
+                    }
+                    Ok(DaemonResponse::Error(e)) => app.set_status(format!("Error: {e}")),
+                    _ => {}
+                }
+            } else {
+                app.set_status("No active group.");
+            }
+        }
         CliCommand::Message(_) => {}
     }
     Ok(())

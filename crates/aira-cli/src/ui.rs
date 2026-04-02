@@ -24,41 +24,67 @@ pub fn draw(frame: &mut Frame, app: &App) {
     draw_chat(frame, app, chunks[1]);
 }
 
-/// Render the contacts panel (left side).
+/// Render the contacts panel (left side): contacts + groups.
 fn draw_contacts(frame: &mut Frame, app: &App, area: Rect) {
     let is_focused = app.focus == Focus::Contacts;
 
-    let items: Vec<ListItem> = app
-        .contacts
-        .iter()
-        .enumerate()
-        .map(|(i, contact)| {
-            let online = if app.is_online(&contact.pubkey) {
-                " \u{25cf}" // ● filled circle
-            } else {
-                ""
-            };
+    let mut items: Vec<ListItem> = Vec::new();
 
+    // Individual contacts
+    for (i, contact) in app.contacts.iter().enumerate() {
+        let online = if app.is_online(&contact.pubkey) {
+            " \u{25cf}" // ● filled circle
+        } else {
+            ""
+        };
+
+        let unread = app
+            .unread
+            .get(&contact.pubkey)
+            .map_or(String::new(), |n| format!(" ({n})"));
+
+        let style = if app.active_group.is_none() && i == app.selected_contact {
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default()
+        };
+
+        items.push(ListItem::new(Line::from(vec![
+            Span::styled(&contact.alias, style),
+            Span::styled(online, Style::default().fg(Color::Green)),
+            Span::styled(unread, Style::default().fg(Color::Red)),
+        ])));
+    }
+
+    // Groups section
+    if !app.groups.is_empty() {
+        items.push(ListItem::new(Line::from(Span::styled(
+            "\u{2500}\u{2500} Groups \u{2500}\u{2500}",
+            Style::default().fg(Color::DarkGray),
+        ))));
+
+        for group in &app.groups {
             let unread = app
-                .unread
-                .get(&contact.pubkey)
+                .group_unread
+                .get(&group.id)
                 .map_or(String::new(), |n| format!(" ({n})"));
 
-            let style = if i == app.selected_contact {
+            let style = if app.active_group == Some(group.id) {
                 Style::default()
-                    .fg(Color::Yellow)
+                    .fg(Color::Magenta)
                     .add_modifier(Modifier::BOLD)
             } else {
-                Style::default()
+                Style::default().fg(Color::Magenta)
             };
 
-            ListItem::new(Line::from(vec![
-                Span::styled(&contact.alias, style),
-                Span::styled(online, Style::default().fg(Color::Green)),
+            items.push(ListItem::new(Line::from(vec![
+                Span::styled(format!("# {}", group.name), style),
                 Span::styled(unread, Style::default().fg(Color::Red)),
-            ]))
-        })
-        .collect();
+            ])));
+        }
+    }
 
     let border_style = if is_focused {
         Style::default().fg(Color::Cyan)
@@ -96,16 +122,31 @@ fn draw_chat(frame: &mut Frame, app: &App, area: Rect) {
 
 /// Render the message history.
 fn draw_messages(frame: &mut Frame, app: &App, area: Rect, is_focused: bool) {
-    let title = app.current_contact().map_or(" Chat ".to_string(), |c| {
-        let status = if app.is_online(&c.pubkey) {
-            " [online]"
-        } else {
-            ""
-        };
-        format!(" {} {status} ", c.alias)
-    });
+    let title = if let Some(gid) = app.active_group {
+        app.groups
+            .iter()
+            .find(|g| g.id == gid)
+            .map_or(" Group Chat ".to_string(), |g| {
+                format!(" # {} ({} members) ", g.name, g.members.len())
+            })
+    } else {
+        app.current_contact().map_or(" Chat ".to_string(), |c| {
+            let status = if app.is_online(&c.pubkey) {
+                " [online]"
+            } else {
+                ""
+            };
+            format!(" {} {status} ", c.alias)
+        })
+    };
 
-    let messages = app.current_messages();
+    let messages = if let Some(gid) = app.active_group {
+        app.group_messages
+            .get(&gid)
+            .map_or(&[] as &[DisplayMessage], |v| v.as_slice())
+    } else {
+        app.current_messages()
+    };
 
     let lines: Vec<Line> = if messages.is_empty() {
         vec![Line::from(Span::styled(

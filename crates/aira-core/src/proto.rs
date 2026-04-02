@@ -74,6 +74,10 @@ pub enum PlainPayload {
         new_kem_pk: Vec<u8>,
     },
 
+    // Group management (SPEC.md §12)
+    /// Group control message — delivered via 1-on-1 ratchet sessions.
+    GroupControl(crate::group_proto::GroupControl),
+
     // Extensibility (SPEC.md §6.16)
     /// Unknown type — old clients show "please update Aira"
     Unknown {
@@ -222,4 +226,10 @@ pub enum AiraError {
     FileTransfer(String),
     #[error("hash mismatch: expected {expected}, got {actual}")]
     HashMismatch { expected: String, actual: String },
+    #[error("group error: {0}")]
+    Group(String),
+    #[error("group is full (max {max} members)")]
+    GroupFull { max: usize },
+    #[error("not a group admin")]
+    NotGroupAdmin,
 }
