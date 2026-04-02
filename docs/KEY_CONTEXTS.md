@@ -31,3 +31,11 @@
 |----------|-----------|-------|
 | `aira/group/chain-advance` | Group sender key chain advancement | aira-core/group |
 | `aira/group/message-key` | Per-message group encryption key | aira-core/group |
+
+## Transport Layer (DPI Resistance)
+
+| Контекст | Назначение | Крейт |
+|----------|-----------|-------|
+| `aira/obfs/session/0` | Obfuscation session key (XOR keystream) | aira-net/transport |
+| `aira/reality/auth/0` | REALITY authentication MAC key derivation | aira-net/transport |
+| `aira/reality/session/0` | REALITY session key derivation | aira-net/transport |

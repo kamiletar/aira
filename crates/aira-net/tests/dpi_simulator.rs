@@ -128,7 +128,8 @@ fn dpi_unknown_for_random_data() {
 
 #[tokio::test]
 async fn direct_transport_passes_payload_unchanged() {
-    let transport = aira_net::transport::create_transport(&TransportMode::Direct).expect("create");
+    let transport =
+        aira_net::transport::create_transport(&TransportMode::Direct, None).expect("create");
     let (client_raw, server_raw) = tokio::io::duplex(8192);
 
     let mut client = transport

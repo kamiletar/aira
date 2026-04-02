@@ -19,6 +19,7 @@ anyhow.workspace = true
 tracing.workspace = true
 zeroize.workspace = true
 blake3.workspace = true
+subtle.workspace = true
 tokio-util.workspace = true
 bytes.workspace = true
 rand.workspace = true
@@ -26,6 +27,13 @@ async-trait = "0.1"
 
 # CDN relay transport (optional)
 reqwest = { version = "0.12", features = ["rustls-tls"], optional = true }
+
+# REALITY-like TLS camouflage (M12, optional)
+rustls = { workspace = true, optional = true }
+tokio-rustls = { workspace = true, optional = true }
+webpki-roots = { workspace = true, optional = true }
+# Tor transport (M12, optional)
+tokio-socks = { workspace = true, optional = true }
 
 [dev-dependencies]
 tempfile = "3"
@@ -35,7 +43,5 @@ default = []
 obfs4 = []
 mimicry = []
 cdn = ["dep:reqwest"]
-reality = []
-tor = []
-# tor = ["dep:arti-client"]  # TODO(M12): enable when arti-client is added
-# arti-client = { version = "0.27", optional = true }
+reality = ["dep:rustls", "dep:tokio-rustls", "dep:webpki-roots"]
+tor = ["dep:tokio-socks"]

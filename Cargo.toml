@@ -12,7 +12,7 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "0.3.1"
+version = "0.3.2"
 edition = "2021"
 authors = ["Aira contributors"]
 license = "MIT OR Apache-2.0"
@@ -70,7 +70,14 @@ subtle = "2"
 
 # Pluggable transports / DPI resistance (M7)
 # ptrs = "0.8"              # TODO(M7): verify crate name/version on crates.io
-# arti-client = "0.27"      # Tor (feature = "tor", M12)
+
+# REALITY-like TLS camouflage (M12)
+rustls = { version = "0.23", default-features = false, features = ["std", "ring"] }
+tokio-rustls = "0.26"
+webpki-roots = "1"
+
+# Tor transport (M12)
+tokio-socks = "0.5"
 
 # GUI
 eframe = "0.29"
