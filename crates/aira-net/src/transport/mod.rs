@@ -137,7 +137,6 @@ pub enum TransportMode {
     },
 }
 
-
 impl fmt::Display for TransportMode {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {

@@ -83,6 +83,54 @@ pub struct GroupInfo {
     pub created_at: u64,
 }
 
+/// Information about a linked device stored in the `devices` table.
+///
+/// Key: `device_id` (32 bytes).
+/// Value: `DeviceInfo` serialized with postcard, then encrypted.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DeviceInfo {
+    /// Unique device identifier (32 bytes).
+    pub device_id: [u8; 32],
+    /// Human-readable device name (e.g., "My Laptop").
+    pub name: String,
+    /// Serialized iroh `NodeId` for transport-level addressing.
+    pub node_id: Vec<u8>,
+    /// Device priority for message routing (1 = highest).
+    pub priority: u8,
+    /// Whether this is the primary device.
+    pub is_primary: bool,
+    /// Unix timestamp (seconds) when the device was linked.
+    pub created_at: u64,
+    /// Unix timestamp (seconds) of last activity.
+    pub last_seen: u64,
+}
+
+/// An entry in the sync log table.
+///
+/// Key: `(device_id_hash: u64, timestamp: u64)`.
+/// Value: `SyncLogEntry` serialized with postcard, then encrypted.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SyncLogEntry {
+    /// Device ID that produced this sync event.
+    pub device_id: [u8; 32],
+    /// Sync sequence number.
+    pub sequence: u64,
+    /// Number of items in the batch.
+    pub item_count: u32,
+    /// Unix timestamp (seconds).
+    pub timestamp: u64,
+}
+
+/// Compute a deterministic hash of a device ID for table keys.
+#[must_use]
+pub fn device_id_hash(device_id: &[u8; 32]) -> u64 {
+    let hash = blake3::hash(device_id);
+    let bytes: &[u8] = hash.as_bytes();
+    u64::from_le_bytes([
+        bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
+    ])
+}
+
 /// Compute a deterministic `contact_id` (u64) from a public key.
 ///
 /// Uses `BLAKE3(pubkey)[0..8]` interpreted as little-endian u64.
@@ -126,6 +174,48 @@ mod tests {
         let decoded: ContactInfo = postcard::from_bytes(&bytes).expect("deserialize");
         assert_eq!(decoded.alias, "Alice");
         assert!(decoded.verified);
+    }
+
+    #[test]
+    fn device_info_roundtrip() {
+        let info = DeviceInfo {
+            device_id: [0xAB; 32],
+            name: "My Laptop".into(),
+            node_id: vec![0x01; 32],
+            priority: 1,
+            is_primary: true,
+            created_at: 1_700_000_000,
+            last_seen: 1_700_001_000,
+        };
+        let bytes = postcard::to_allocvec(&info).expect("serialize");
+        let decoded: DeviceInfo = postcard::from_bytes(&bytes).expect("deserialize");
+        assert_eq!(decoded, info);
+    }
+
+    #[test]
+    fn sync_log_entry_roundtrip() {
+        let entry = SyncLogEntry {
+            device_id: [0xCD; 32],
+            sequence: 42,
+            item_count: 10,
+            timestamp: 1_700_000_000,
+        };
+        let bytes = postcard::to_allocvec(&entry).expect("serialize");
+        let decoded: SyncLogEntry = postcard::from_bytes(&bytes).expect("deserialize");
+        assert_eq!(decoded, entry);
+    }
+
+    #[test]
+    fn device_id_hash_is_deterministic() {
+        let id = [0xAB; 32];
+        assert_eq!(device_id_hash(&id), device_id_hash(&id));
+    }
+
+    #[test]
+    fn device_id_hash_differs_for_different_ids() {
+        let id1 = [0xAA; 32];
+        let id2 = [0xBB; 32];
+        assert_ne!(device_id_hash(&id1), device_id_hash(&id2));
     }
 
     #[test]

@@ -128,6 +128,24 @@ pub enum DaemonRequest {
         /// Group ID (32 bytes).
         group_id: [u8; 32],
     },
+
+    // ─── Device operations (SPEC.md §14) ────────────────────────────────
+    /// Generate a one-time link code for pairing a new device.
+    GenerateLinkCode,
+    /// Link a new device using a previously generated code.
+    LinkDevice {
+        /// The 6-digit link code.
+        code: String,
+        /// Human-readable name for the new device.
+        device_name: String,
+    },
+    /// Get all linked devices.
+    GetDevices,
+    /// Unlink (remove) a device.
+    UnlinkDevice {
+        /// Device ID to remove (32 bytes).
+        device_id: [u8; 32],
+    },
 }
 
 /// Response from daemon to client.
@@ -159,6 +177,19 @@ pub enum DaemonResponse {
     Groups(Vec<GroupInfoResp>),
     /// Group message history.
     GroupHistory(Vec<aira_storage::StoredMessage>),
+
+    // ─── Device responses ───────────────────────────────────────────────
+    /// Generated link code for device pairing.
+    LinkCode(String),
+    /// Device linked successfully.
+    DeviceLinked {
+        /// The new device's ID.
+        device_id: [u8; 32],
+        /// Device display name.
+        name: String,
+    },
+    /// List of linked devices.
+    Devices(Vec<DeviceInfoResp>),
 }
 
 /// Group information returned in daemon responses.
@@ -185,6 +216,21 @@ pub struct GroupMemberResp {
     pub role: String,
     /// Unix timestamp (seconds) when joined.
     pub joined_at: u64,
+}
+
+/// Device information returned in daemon responses.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeviceInfoResp {
+    /// Device ID (32 bytes).
+    pub device_id: [u8; 32],
+    /// Human-readable device name.
+    pub name: String,
+    /// Whether this is the primary device.
+    pub is_primary: bool,
+    /// Device priority (1 = highest).
+    pub priority: u8,
+    /// Unix timestamp (seconds) of last activity.
+    pub last_seen: u64,
 }
 
 /// Wrapper for all messages sent from daemon to client over IPC.
@@ -270,6 +316,27 @@ pub enum DaemonEvent {
         name: String,
         /// Inviter's ML-DSA public key.
         invited_by: Vec<u8>,
+    },
+
+    // ─── Device events (SPEC.md §14) ────────────────────────────────────
+    /// A new device was linked to this identity.
+    DeviceLinked {
+        /// Device ID (32 bytes).
+        device_id: [u8; 32],
+        /// Device name.
+        name: String,
+    },
+    /// A device was unlinked from this identity.
+    DeviceUnlinked {
+        /// Device ID (32 bytes).
+        device_id: [u8; 32],
+    },
+    /// Device synchronization completed.
+    SyncCompleted {
+        /// Remote device ID (32 bytes).
+        device_id: [u8; 32],
+        /// Number of messages synced.
+        messages_synced: u32,
     },
 }
 
@@ -585,6 +652,166 @@ mod tests {
             DaemonEvent::FileError { id, error } => {
                 assert_eq!(id, [0xFF; 16]);
                 assert_eq!(error, "connection lost");
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    // ─── Device IPC roundtrip tests ─────────────────────────────────────
+
+    #[test]
+    fn generate_link_code_request_roundtrip() {
+        let req = DaemonRequest::GenerateLinkCode;
+        let bytes = postcard::to_allocvec(&req).expect("serialize");
+        let decoded: DaemonRequest = postcard::from_bytes(&bytes).expect("deserialize");
+        assert!(matches!(decoded, DaemonRequest::GenerateLinkCode));
+    }
+
+    #[test]
+    fn link_device_request_roundtrip() {
+        let req = DaemonRequest::LinkDevice {
+            code: "042871".into(),
+            device_name: "My Phone".into(),
+        };
+        let bytes = postcard::to_allocvec(&req).expect("serialize");
+        let decoded: DaemonRequest = postcard::from_bytes(&bytes).expect("deserialize");
+        match decoded {
+            DaemonRequest::LinkDevice { code, device_name } => {
+                assert_eq!(code, "042871");
+                assert_eq!(device_name, "My Phone");
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn get_devices_request_roundtrip() {
+        let req = DaemonRequest::GetDevices;
+        let bytes = postcard::to_allocvec(&req).expect("serialize");
+        let decoded: DaemonRequest = postcard::from_bytes(&bytes).expect("deserialize");
+        assert!(matches!(decoded, DaemonRequest::GetDevices));
+    }
+
+    #[test]
+    fn unlink_device_request_roundtrip() {
+        let req = DaemonRequest::UnlinkDevice {
+            device_id: [0xAB; 32],
+        };
+        let bytes = postcard::to_allocvec(&req).expect("serialize");
+        let decoded: DaemonRequest = postcard::from_bytes(&bytes).expect("deserialize");
+        match decoded {
+            DaemonRequest::UnlinkDevice { device_id } => {
+                assert_eq!(device_id, [0xAB; 32]);
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn link_code_response_roundtrip() {
+        let resp = DaemonResponse::LinkCode("123456".into());
+        let bytes = postcard::to_allocvec(&resp).expect("serialize");
+        let decoded: DaemonResponse = postcard::from_bytes(&bytes).expect("deserialize");
+        match decoded {
+            DaemonResponse::LinkCode(code) => assert_eq!(code, "123456"),
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn device_linked_response_roundtrip() {
+        let resp = DaemonResponse::DeviceLinked {
+            device_id: [0xCD; 32],
+            name: "Laptop".into(),
+        };
+        let bytes = postcard::to_allocvec(&resp).expect("serialize");
+        let decoded: DaemonResponse = postcard::from_bytes(&bytes).expect("deserialize");
+        match decoded {
+            DaemonResponse::DeviceLinked { device_id, name } => {
+                assert_eq!(device_id, [0xCD; 32]);
+                assert_eq!(name, "Laptop");
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn devices_response_roundtrip() {
+        let resp = DaemonResponse::Devices(vec![
+            DeviceInfoResp {
+                device_id: [0x01; 32],
+                name: "Laptop".into(),
+                is_primary: true,
+                priority: 1,
+                last_seen: 1_700_000_000,
+            },
+            DeviceInfoResp {
+                device_id: [0x02; 32],
+                name: "Phone".into(),
+                is_primary: false,
+                priority: 2,
+                last_seen: 1_700_001_000,
+            },
+        ]);
+        let bytes = postcard::to_allocvec(&resp).expect("serialize");
+        let decoded: DaemonResponse = postcard::from_bytes(&bytes).expect("deserialize");
+        match decoded {
+            DaemonResponse::Devices(devices) => {
+                assert_eq!(devices.len(), 2);
+                assert_eq!(devices[0].name, "Laptop");
+                assert!(devices[0].is_primary);
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn device_linked_event_roundtrip() {
+        let event = DaemonEvent::DeviceLinked {
+            device_id: [0xEE; 32],
+            name: "Tablet".into(),
+        };
+        let bytes = postcard::to_allocvec(&event).expect("serialize");
+        let decoded: DaemonEvent = postcard::from_bytes(&bytes).expect("deserialize");
+        match decoded {
+            DaemonEvent::DeviceLinked { device_id, name } => {
+                assert_eq!(device_id, [0xEE; 32]);
+                assert_eq!(name, "Tablet");
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn device_unlinked_event_roundtrip() {
+        let event = DaemonEvent::DeviceUnlinked {
+            device_id: [0xFF; 32],
+        };
+        let bytes = postcard::to_allocvec(&event).expect("serialize");
+        let decoded: DaemonEvent = postcard::from_bytes(&bytes).expect("deserialize");
+        match decoded {
+            DaemonEvent::DeviceUnlinked { device_id } => {
+                assert_eq!(device_id, [0xFF; 32]);
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn sync_completed_event_roundtrip() {
+        let event = DaemonEvent::SyncCompleted {
+            device_id: [0x11; 32],
+            messages_synced: 42,
+        };
+        let bytes = postcard::to_allocvec(&event).expect("serialize");
+        let decoded: DaemonEvent = postcard::from_bytes(&bytes).expect("deserialize");
+        match decoded {
+            DaemonEvent::SyncCompleted {
+                device_id,
+                messages_synced,
+            } => {
+                assert_eq!(device_id, [0x11; 32]);
+                assert_eq!(messages_synced, 42);
             }
             _ => panic!("wrong variant"),
         }

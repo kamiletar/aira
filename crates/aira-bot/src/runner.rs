@@ -118,10 +118,13 @@ async fn dispatch(bot: &impl Bot, ctx: &BotContext, event: DaemonEvent) -> Resul
         } => {
             bot.on_group_invite(ctx, group_id, name, invited_by).await?;
         }
-        // File events are not dispatched to bots in this version.
+        // File and device events are not dispatched to bots in this version.
         DaemonEvent::FileProgress { .. }
         | DaemonEvent::FileComplete { .. }
-        | DaemonEvent::FileError { .. } => {}
+        | DaemonEvent::FileError { .. }
+        | DaemonEvent::DeviceLinked { .. }
+        | DaemonEvent::DeviceUnlinked { .. }
+        | DaemonEvent::SyncCompleted { .. } => {}
     }
     Ok(())
 }

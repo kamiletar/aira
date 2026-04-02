@@ -22,6 +22,7 @@
 
 mod bip39_wordlist;
 pub mod crypto;
+pub mod device;
 pub mod group;
 pub mod group_proto;
 pub mod handshake;
@@ -34,3 +35,4 @@ pub mod ratchet;
 pub mod safety;
 pub mod seed;
 pub mod spam;
+pub mod sync;

@@ -58,6 +58,91 @@ impl InvitationLink {
     }
 }
 
+// ─── DHT multidevice records (SPEC.md §14.4) ───────────────────────────────
+
+/// A single device entry in a multidevice DHT record.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DeviceEntry {
+    /// Device's iroh `NodeId` (serialized).
+    pub node_id: Vec<u8>,
+    /// Device priority for message routing (1 = highest).
+    pub priority: u8,
+    /// Unix timestamp (seconds) of last seen activity.
+    pub last_seen: u64,
+}
+
+/// DHT record advertising multiple devices for a single identity.
+///
+/// ```text
+/// ML-DSA_pubkey → DeviceRecord {
+///     devices: [DeviceEntry, ...],
+///     signature: ML-DSA_sign(postcard(devices))
+/// }
+/// ```
+///
+/// Bob sends to Alice's device with highest priority, or to all
+/// if broadcast mode is active.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeviceRecord {
+    /// Identity public key (ML-DSA-65).
+    pub identity_pk: Vec<u8>,
+    /// All registered devices for this identity.
+    pub devices: Vec<DeviceEntry>,
+    /// ML-DSA signature over `postcard(devices)` for authentication.
+    pub signature: Vec<u8>,
+}
+
+impl DeviceRecord {
+    /// Create a new device record (unsigned — caller must sign).
+    #[must_use]
+    pub fn new(identity_pk: Vec<u8>, devices: Vec<DeviceEntry>) -> Self {
+        Self {
+            identity_pk,
+            devices,
+            signature: Vec::new(),
+        }
+    }
+
+    /// Get the device bytes to be signed: `postcard(devices)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NetError`] if serialization fails.
+    pub fn signable_bytes(&self) -> Result<Vec<u8>, NetError> {
+        postcard::to_allocvec(&self.devices).map_err(Into::into)
+    }
+
+    /// Get the highest-priority (lowest number) device.
+    #[must_use]
+    pub fn highest_priority_device(&self) -> Option<&DeviceEntry> {
+        self.devices.iter().min_by_key(|d| d.priority)
+    }
+
+    /// Number of registered devices.
+    #[must_use]
+    pub fn device_count(&self) -> usize {
+        self.devices.len()
+    }
+
+    /// Encode to bytes for DHT storage.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NetError`] if serialization fails.
+    pub fn to_bytes(&self) -> Result<Vec<u8>, NetError> {
+        postcard::to_allocvec(self).map_err(Into::into)
+    }
+
+    /// Decode from bytes.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NetError`] if deserialization fails.
+    pub fn from_bytes(data: &[u8]) -> Result<Self, NetError> {
+        postcard::from_bytes(data).map_err(Into::into)
+    }
+}
+
 // ─── Base64url encoding (RFC 4648 §5, no padding) ──────────────────────────
 
 const B64: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
@@ -149,6 +234,84 @@ mod tests {
         let encoded = base64url_encode(data);
         let decoded = base64url_decode(&encoded).unwrap();
         assert_eq!(decoded, data);
+    }
+
+    #[test]
+    fn device_entry_roundtrip() {
+        let entry = DeviceEntry {
+            node_id: vec![0xAA; 32],
+            priority: 1,
+            last_seen: 1_700_000_000,
+        };
+        let bytes = postcard::to_allocvec(&entry).unwrap();
+        let decoded: DeviceEntry = postcard::from_bytes(&bytes).unwrap();
+        assert_eq!(decoded, entry);
+    }
+
+    #[test]
+    fn device_record_roundtrip() {
+        let record = DeviceRecord {
+            identity_pk: vec![0x01; 64],
+            devices: vec![
+                DeviceEntry {
+                    node_id: vec![0xAA; 32],
+                    priority: 1,
+                    last_seen: 1_700_000_000,
+                },
+                DeviceEntry {
+                    node_id: vec![0xBB; 32],
+                    priority: 2,
+                    last_seen: 1_700_001_000,
+                },
+            ],
+            signature: vec![0xFF; 128],
+        };
+        let bytes = record.to_bytes().unwrap();
+        let decoded = DeviceRecord::from_bytes(&bytes).unwrap();
+        assert_eq!(decoded.devices.len(), 2);
+        assert_eq!(decoded.identity_pk, record.identity_pk);
+    }
+
+    #[test]
+    fn device_record_highest_priority() {
+        let record = DeviceRecord::new(
+            vec![0x01; 64],
+            vec![
+                DeviceEntry {
+                    node_id: vec![0xAA; 32],
+                    priority: 3,
+                    last_seen: 100,
+                },
+                DeviceEntry {
+                    node_id: vec![0xBB; 32],
+                    priority: 1,
+                    last_seen: 200,
+                },
+                DeviceEntry {
+                    node_id: vec![0xCC; 32],
+                    priority: 2,
+                    last_seen: 300,
+                },
+            ],
+        );
+        let best = record.highest_priority_device().unwrap();
+        assert_eq!(best.priority, 1);
+        assert_eq!(best.node_id, vec![0xBB; 32]);
+    }
+
+    #[test]
+    fn device_record_signable_bytes_deterministic() {
+        let record = DeviceRecord::new(
+            vec![0x01; 64],
+            vec![DeviceEntry {
+                node_id: vec![0xAA; 32],
+                priority: 1,
+                last_seen: 100,
+            }],
+        );
+        let sig1 = record.signable_bytes().unwrap();
+        let sig2 = record.signable_bytes().unwrap();
+        assert_eq!(sig1, sig2);
     }
 
     #[test]

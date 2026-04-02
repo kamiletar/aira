@@ -582,6 +582,74 @@ async fn execute_command(app: &mut App, client: &DaemonClient, cmd: CliCommand) 
                 app.set_status("No active group.");
             }
         }
+        // ─── Device commands ─────────────────────────────────────────────
+        CliCommand::Link { code } => match code {
+            None => match client.request(&DaemonRequest::GenerateLinkCode).await {
+                Ok(DaemonResponse::LinkCode(code)) => {
+                    app.set_status(format!("Link code: {code}  (valid for 5 minutes)"));
+                }
+                Ok(DaemonResponse::Error(e)) => app.set_status(format!("Error: {e}")),
+                _ => {}
+            },
+            Some(code) => {
+                let req = DaemonRequest::LinkDevice {
+                    code,
+                    device_name: "Linked Device".into(),
+                };
+                match client.request(&req).await {
+                    Ok(DaemonResponse::DeviceLinked { device_id, name }) => {
+                        app.set_status(format!(
+                            "Linked: {name} ({}...)",
+                            hex::encode(&device_id[..4])
+                        ));
+                    }
+                    Ok(DaemonResponse::Error(e)) => app.set_status(format!("Error: {e}")),
+                    _ => {}
+                }
+            }
+        },
+        CliCommand::Devices => match client.request(&DaemonRequest::GetDevices).await {
+            Ok(DaemonResponse::Devices(devices)) => {
+                if devices.is_empty() {
+                    app.set_status("No linked devices.");
+                } else {
+                    let list: Vec<String> = devices
+                        .iter()
+                        .map(|d| {
+                            format!(
+                                "{}... {} (P{}){}",
+                                hex::encode(&d.device_id[..4]),
+                                d.name,
+                                d.priority,
+                                if d.is_primary { " [primary]" } else { "" }
+                            )
+                        })
+                        .collect();
+                    app.set_status(format!("Devices: {}", list.join(", ")));
+                }
+            }
+            Ok(DaemonResponse::Error(e)) => app.set_status(format!("Error: {e}")),
+            _ => {}
+        },
+        CliCommand::Unlink { device_id } => {
+            let bytes = hex::decode(&device_id).unwrap_or_default();
+            if bytes.len() == 32 {
+                let mut id = [0u8; 32];
+                id.copy_from_slice(&bytes);
+                match client
+                    .request(&DaemonRequest::UnlinkDevice { device_id: id })
+                    .await
+                {
+                    Ok(DaemonResponse::Ok) => {
+                        app.set_status(format!("Device {}... unlinked.", &device_id[..8]));
+                    }
+                    Ok(DaemonResponse::Error(e)) => app.set_status(format!("Error: {e}")),
+                    _ => {}
+                }
+            } else {
+                app.set_status("Invalid device ID (expected 64 hex chars).");
+            }
+        }
         CliCommand::Message(_) => {}
     }
     Ok(())

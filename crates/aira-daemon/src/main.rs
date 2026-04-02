@@ -19,7 +19,9 @@ mod transfers;
 
 use aira_daemon::types;
 use transfers::TransferManager;
-use types::{DaemonEvent, DaemonRequest, DaemonResponse, GroupInfoResp, GroupMemberResp};
+use types::{
+    DaemonEvent, DaemonRequest, DaemonResponse, DeviceInfoResp, GroupInfoResp, GroupMemberResp,
+};
 
 /// Default data directory.
 fn data_dir() -> PathBuf {
@@ -310,6 +312,48 @@ fn handle_request(
             handle_group_remove_member(storage, &group_id, &member)
         }
         DaemonRequest::LeaveGroup { group_id } => handle_leave_group(storage, &group_id),
+
+        // ─── Device operations (SPEC.md §14) ────────────────────────────
+        DaemonRequest::GenerateLinkCode => {
+            // TODO(M8): use actual seed; for now return placeholder
+            DaemonResponse::LinkCode("000000".into())
+        }
+        DaemonRequest::LinkDevice {
+            code: _,
+            device_name,
+        } => {
+            // TODO(M8): verify code, establish sync channel
+            DaemonResponse::DeviceLinked {
+                device_id: [0; 32],
+                name: device_name,
+            }
+        }
+        DaemonRequest::GetDevices => match aira_storage::devices::list_devices(storage) {
+            Ok(devices) => {
+                let resp: Vec<_> = devices
+                    .iter()
+                    .filter_map(|(id, bytes)| {
+                        postcard::from_bytes::<aira_storage::DeviceInfo>(bytes)
+                            .ok()
+                            .map(|info| DeviceInfoResp {
+                                device_id: *id,
+                                name: info.name,
+                                is_primary: info.is_primary,
+                                priority: info.priority,
+                                last_seen: info.last_seen,
+                            })
+                    })
+                    .collect();
+                DaemonResponse::Devices(resp)
+            }
+            Err(e) => DaemonResponse::Error(e.to_string()),
+        },
+        DaemonRequest::UnlinkDevice { device_id } => {
+            match aira_storage::devices::remove_device(storage, &device_id) {
+                Ok(()) => DaemonResponse::Ok,
+                Err(e) => DaemonResponse::Error(e.to_string()),
+            }
+        }
     }
 }
 

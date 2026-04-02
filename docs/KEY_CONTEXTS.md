@@ -17,6 +17,14 @@
 | `aira/ratchet/root` | Root key after DH ratchet step | aira-core/ratchet |
 | `aira/ratchet/chain` | Chain key after DH ratchet step | aira-core/ratchet |
 
+## Device Management (Multidevice)
+
+| Контекст | Назначение | Крейт |
+|----------|-----------|-------|
+| `aira/device/id` | Device ID derivation (per-index) | aira-core/device |
+| `aira/device/sync-key` | Device-to-device sync encryption key | aira-core/device |
+| `aira/device/link-code` | One-time linking code material | aira-core/device |
+
 ## Group Sender Keys
 
 | Контекст | Назначение | Крейт |

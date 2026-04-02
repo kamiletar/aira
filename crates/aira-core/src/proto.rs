@@ -232,4 +232,8 @@ pub enum AiraError {
     GroupFull { max: usize },
     #[error("not a group admin")]
     NotGroupAdmin,
+    #[error("device group is full (max {max} devices)")]
+    DeviceGroupFull { max: usize },
+    #[error("device error: {0}")]
+    Device(String),
 }

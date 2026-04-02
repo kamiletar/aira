@@ -288,6 +288,27 @@ impl App {
             } => {
                 self.status_message = Some(format!("Group invite: {name}"));
             }
+            DaemonEvent::DeviceLinked { device_id, name } => {
+                self.status_message = Some(format!(
+                    "Device linked: {name} ({}...)",
+                    hex::encode(&device_id[..4])
+                ));
+            }
+            DaemonEvent::DeviceUnlinked { device_id } => {
+                self.status_message = Some(format!(
+                    "Device unlinked: {}...",
+                    hex::encode(&device_id[..4])
+                ));
+            }
+            DaemonEvent::SyncCompleted {
+                device_id,
+                messages_synced,
+            } => {
+                self.status_message = Some(format!(
+                    "Sync complete: {messages_synced} messages with {}...",
+                    hex::encode(&device_id[..4])
+                ));
+            }
         }
     }
 

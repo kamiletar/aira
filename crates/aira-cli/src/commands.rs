@@ -63,6 +63,14 @@ pub enum CliCommand {
     /// `/group leave` — leave the current group.
     GroupLeave,
 
+    // ─── Device commands (SPEC.md §14) ───────────────────────────────
+    /// `/link` — generate a link code; `/link <code>` — link using a code.
+    Link { code: Option<String> },
+    /// `/devices` — list all linked devices.
+    Devices,
+    /// `/unlink <device_id>` — unlink a device by hex ID.
+    Unlink { device_id: String },
+
     /// Plain text message to send to the current contact.
     Message(String),
 }
@@ -72,6 +80,7 @@ const COMMAND_NAMES: &[&str] = &[
     "add",
     "block",
     "delete-account",
+    "devices",
     "disappear",
     "export",
     "file",
@@ -79,6 +88,7 @@ const COMMAND_NAMES: &[&str] = &[
     "import",
     "info",
     "lang",
+    "link",
     "me",
     "mute",
     "mykey",
@@ -86,6 +96,7 @@ const COMMAND_NAMES: &[&str] = &[
     "search",
     "transport",
     "unblock",
+    "unlink",
     "verify",
 ];
 
@@ -242,6 +253,22 @@ pub fn parse(input: &str) -> Result<CliCommand, String> {
             })
         }
         "group" => parse_group(args),
+        "link" => Ok(CliCommand::Link {
+            code: if args.is_empty() {
+                None
+            } else {
+                Some(args.to_string())
+            },
+        }),
+        "devices" => Ok(CliCommand::Devices),
+        "unlink" => {
+            if args.is_empty() {
+                return Err("usage: /unlink <device_id_hex>".into());
+            }
+            Ok(CliCommand::Unlink {
+                device_id: args.to_string(),
+            })
+        }
         _ => Err(format!("unknown command: /{cmd}")),
     }
 }
@@ -678,5 +705,66 @@ mod tests {
     fn completions_group_all_subs() {
         let comps = completions("/group ");
         assert_eq!(comps.len(), GROUP_SUBCOMMANDS.len());
+    }
+
+    // ─── Device command tests ──────────────────────────────────────────
+
+    #[test]
+    fn parse_link_generate() {
+        let cmd = parse("/link").unwrap();
+        assert_eq!(cmd, CliCommand::Link { code: None });
+    }
+
+    #[test]
+    fn parse_link_with_code() {
+        let cmd = parse("/link 042871").unwrap();
+        assert_eq!(
+            cmd,
+            CliCommand::Link {
+                code: Some("042871".into()),
+            }
+        );
+    }
+
+    #[test]
+    fn parse_devices() {
+        assert_eq!(parse("/devices").unwrap(), CliCommand::Devices);
+    }
+
+    #[test]
+    fn parse_unlink() {
+        let cmd = parse("/unlink abcdef01").unwrap();
+        assert_eq!(
+            cmd,
+            CliCommand::Unlink {
+                device_id: "abcdef01".into(),
+            }
+        );
+    }
+
+    #[test]
+    fn parse_unlink_missing_id() {
+        assert!(parse("/unlink").is_err());
+    }
+
+    #[test]
+    fn completions_include_device_commands() {
+        let comps = completions("/d");
+        assert!(comps.contains(&"/devices".into()));
+        assert!(comps.contains(&"/delete-account".into()));
+        assert!(comps.contains(&"/disappear".into()));
+    }
+
+    #[test]
+    fn completions_link() {
+        let comps = completions("/l");
+        assert!(comps.contains(&"/link".into()));
+        assert!(comps.contains(&"/lang".into()));
+    }
+
+    #[test]
+    fn completions_unlink() {
+        let comps = completions("/unl");
+        assert!(comps.contains(&"/unlink".into()));
     }
 }

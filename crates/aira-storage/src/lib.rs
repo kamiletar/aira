@@ -25,6 +25,7 @@ use zeroize::Zeroizing;
 pub mod backup;
 pub mod contacts;
 pub mod dedup;
+pub mod devices;
 pub mod encrypted;
 pub mod groups;
 pub mod messages;
@@ -33,7 +34,10 @@ pub mod sessions;
 pub mod settings;
 pub mod types;
 
-pub use types::{contact_id, ContactInfo, GroupInfo, GroupMemberInfo, GroupRole, StoredMessage};
+pub use types::{
+    contact_id, ContactInfo, DeviceInfo, GroupInfo, GroupMemberInfo, GroupRole, StoredMessage,
+    SyncLogEntry,
+};
 
 // ─── Table definitions ──────────────────────────────────────────────────────
 
@@ -47,6 +51,10 @@ pub const SETTINGS: TableDefinition<&str, &[u8]> = TableDefinition::new("setting
 pub const GROUPS: TableDefinition<&[u8], &[u8]> = TableDefinition::new("groups");
 pub const GROUP_MESSAGES: TableDefinition<(&[u8], u64), &[u8]> =
     TableDefinition::new("group_messages");
+/// Linked devices: `device_id (32 bytes)` → encrypted `DeviceInfo`.
+pub const DEVICES: TableDefinition<&[u8], &[u8]> = TableDefinition::new("devices");
+/// Sync log: `(device_id_hash: u64, timestamp: u64)` → encrypted `SyncLogEntry`.
+pub const SYNC_LOG: TableDefinition<(u64, u64), &[u8]> = TableDefinition::new("sync_log");
 
 /// 24-hour dedup window for message IDs (SPEC.md §6.21).
 pub const DEDUP_WINDOW_SECS: u64 = 24 * 60 * 60;
@@ -125,6 +133,8 @@ impl Storage {
             let _t = txn.open_table(SETTINGS)?;
             let _t = txn.open_table(GROUPS)?;
             let _t = txn.open_table(GROUP_MESSAGES)?;
+            let _t = txn.open_table(DEVICES)?;
+            let _t = txn.open_table(SYNC_LOG)?;
         }
         txn.commit()?;
 
