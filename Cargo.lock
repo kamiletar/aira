@@ -48,7 +48,7 @@ dependencies = [
 
 [[package]]
 name = "aira-cli"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "aira-core",
  "anyhow",
@@ -63,7 +63,7 @@ dependencies = [
 
 [[package]]
 name = "aira-core"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "anyhow",
  "argon2",
@@ -90,23 +90,25 @@ dependencies = [
 
 [[package]]
 name = "aira-daemon"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "aira-core",
  "aira-net",
  "aira-storage",
  "anyhow",
  "postcard",
+ "rand 0.8.5",
  "serde",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "zeroize",
 ]
 
 [[package]]
 name = "aira-net"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "aira-core",
  "anyhow",
@@ -125,12 +127,14 @@ dependencies = [
 
 [[package]]
 name = "aira-storage"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "aira-core",
  "anyhow",
  "blake3",
+ "chacha20poly1305",
  "postcard",
+ "rand 0.8.5",
  "redb",
  "serde",
  "thiserror 2.0.18",

@@ -17,7 +17,8 @@ use chacha20poly1305::{
     aead::{Aead, KeyInit},
     ChaCha20Poly1305,
 };
-use x25519_dalek::{PublicKey as X25519PublicKey, ReusableSecret};
+use serde::{Deserialize, Serialize};
+use x25519_dalek::{PublicKey as X25519PublicKey, StaticSecret};
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
@@ -111,6 +112,36 @@ fn pq_mix(root_key: &[u8; 32], pq_secret: &[u8; 32]) -> [u8; 32] {
 /// Key: (DH public key, counter) → message key.
 type SkippedKeys = HashMap<([u8; 32], u64), [u8; 32]>;
 
+// ─── RatchetSnapshot (serializable state) ───────────────────────────────────
+
+/// Serializable snapshot of a [`RatchetSession`] for persistence.
+///
+/// Unlike `RatchetSession`, all fields are plain byte arrays that can be
+/// serialized with postcard/serde. The snapshot is encrypted before
+/// storage in the database.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct RatchetSnapshot {
+    pub root_key: [u8; 32],
+    pub send_chain_key: [u8; 32],
+    pub send_counter: u64,
+    pub send_dh_secret_bytes: [u8; 32],
+    pub send_dh_public_bytes: [u8; 32],
+    pub recv_chain_key: Option<[u8; 32]>,
+    pub recv_counter: u64,
+    pub peer_dh_public: Option<[u8; 32]>,
+    pub prev_send_chain_len: u64,
+    pub pq_enabled: bool,
+    pub send_since_pq: u64,
+    /// ML-KEM-768 decapsulation key (serialized).
+    pub pq_dk_bytes: Option<Vec<u8>>,
+    /// ML-KEM-768 encapsulation key (serialized).
+    pub pq_ek_bytes: Option<Vec<u8>>,
+    /// Peer's ML-KEM-768 encapsulation key (serialized).
+    pub peer_pq_ek_bytes: Option<Vec<u8>>,
+    /// Skipped message keys: `(dh_public, counter, message_key)`.
+    pub skipped_entries: Vec<([u8; 32], u64, [u8; 32])>,
+}
+
 // ─── RatchetSession ─────────────────────────────────────────────────────────
 
 /// Full Triple Ratchet (SPQR) session state.
@@ -124,7 +155,7 @@ pub struct RatchetSession {
     // Sending state
     send_chain_key: [u8; 32],
     send_counter: u64,
-    send_dh_secret: ReusableSecret,
+    send_dh_secret: StaticSecret,
     send_dh_public: X25519PublicKey,
 
     // Receiving state
@@ -156,7 +187,7 @@ impl RatchetSession {
         peer_dh_public: [u8; 32],
         pq_enabled: bool,
     ) -> Self {
-        let send_dh_secret = ReusableSecret::random_from_rng(rand::thread_rng());
+        let send_dh_secret = StaticSecret::random_from_rng(rand::thread_rng());
         let send_dh_public = X25519PublicKey::from(&send_dh_secret);
 
         let (pq_dk, pq_ek) = if pq_enabled {
@@ -366,7 +397,7 @@ impl RatchetSession {
         self.recv_chain_key = Some(new_recv_chain);
 
         // Generate new DH keypair
-        self.send_dh_secret = ReusableSecret::random_from_rng(rand::thread_rng());
+        self.send_dh_secret = StaticSecret::random_from_rng(rand::thread_rng());
         self.send_dh_public = X25519PublicKey::from(&self.send_dh_secret);
 
         // Send chain: DH with new secret and peer's key
@@ -374,6 +405,122 @@ impl RatchetSession {
         let (new_root, new_send_chain) = dh_ratchet(&self.root_key, dh_send.as_bytes());
         self.root_key = new_root;
         self.send_chain_key = new_send_chain;
+    }
+
+    /// Serialize the session state to a snapshot for persistence.
+    ///
+    /// The snapshot can be stored in the database (encrypted) and
+    /// later restored with [`from_snapshot`].
+    #[must_use]
+    pub fn to_snapshot(&self) -> RatchetSnapshot {
+        let pq_dk_bytes = self.pq_mlkem_dk.as_ref().map(|dk| {
+            use ml_kem::EncodedSizeUser;
+            dk.as_bytes().to_vec()
+        });
+        let pq_ek_bytes = self.pq_mlkem_ek.as_ref().map(|ek| {
+            use ml_kem::EncodedSizeUser;
+            ek.as_bytes().to_vec()
+        });
+        let peer_pq_ek_bytes = self.peer_pq_ek.as_ref().map(|ek| {
+            use ml_kem::EncodedSizeUser;
+            ek.as_bytes().to_vec()
+        });
+
+        let skipped_entries: Vec<([u8; 32], u64, [u8; 32])> = self
+            .skipped
+            .iter()
+            .map(|((pk, counter), key)| (*pk, *counter, *key))
+            .collect();
+
+        RatchetSnapshot {
+            root_key: self.root_key,
+            send_chain_key: self.send_chain_key,
+            send_counter: self.send_counter,
+            send_dh_secret_bytes: self.send_dh_secret.to_bytes(),
+            send_dh_public_bytes: *self.send_dh_public.as_bytes(),
+            recv_chain_key: self.recv_chain_key,
+            recv_counter: self.recv_counter,
+            peer_dh_public: self.peer_dh_public,
+            prev_send_chain_len: self.prev_send_chain_len,
+            pq_enabled: self.pq_enabled,
+            send_since_pq: self.send_since_pq,
+            pq_dk_bytes,
+            pq_ek_bytes,
+            peer_pq_ek_bytes,
+            skipped_entries,
+        }
+    }
+
+    /// Restore a session from a previously saved snapshot.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AiraError::Decryption`] if PQ key deserialization fails.
+    pub fn from_snapshot(snap: RatchetSnapshot) -> Result<Self, AiraError> {
+        let send_dh_secret = StaticSecret::from(snap.send_dh_secret_bytes);
+        let send_dh_public = X25519PublicKey::from(snap.send_dh_public_bytes);
+
+        let pq_mlkem_dk = snap
+            .pq_dk_bytes
+            .as_deref()
+            .map(|bytes| {
+                use ml_kem::EncodedSizeUser;
+                let encoded = ml_kem::Encoded::<
+                    <RustCryptoProvider as CryptoProvider>::KemDecapsKey,
+                >::try_from(bytes)
+                .map_err(|_| AiraError::Decryption)?;
+                Ok(<RustCryptoProvider as CryptoProvider>::KemDecapsKey::from_bytes(&encoded))
+            })
+            .transpose()?;
+
+        let pq_mlkem_ek = snap
+            .pq_ek_bytes
+            .as_deref()
+            .map(|bytes| {
+                use ml_kem::EncodedSizeUser;
+                let encoded = ml_kem::Encoded::<
+                    <RustCryptoProvider as CryptoProvider>::KemEncapsKey,
+                >::try_from(bytes)
+                .map_err(|_| AiraError::Decryption)?;
+                Ok(<RustCryptoProvider as CryptoProvider>::KemEncapsKey::from_bytes(&encoded))
+            })
+            .transpose()?;
+
+        let peer_pq_ek = snap
+            .peer_pq_ek_bytes
+            .as_deref()
+            .map(|bytes| {
+                use ml_kem::EncodedSizeUser;
+                let encoded = ml_kem::Encoded::<
+                    <RustCryptoProvider as CryptoProvider>::KemEncapsKey,
+                >::try_from(bytes)
+                .map_err(|_| AiraError::Decryption)?;
+                Ok(<RustCryptoProvider as CryptoProvider>::KemEncapsKey::from_bytes(&encoded))
+            })
+            .transpose()?;
+
+        let mut skipped = HashMap::new();
+        for (pk, counter, key) in snap.skipped_entries {
+            skipped.insert((pk, counter), key);
+        }
+
+        Ok(Self {
+            root_key: snap.root_key,
+            send_chain_key: snap.send_chain_key,
+            send_counter: snap.send_counter,
+            send_dh_secret,
+            send_dh_public,
+            recv_chain_key: snap.recv_chain_key,
+            recv_counter: snap.recv_counter,
+            peer_dh_public: snap.peer_dh_public,
+            prev_send_chain_len: snap.prev_send_chain_len,
+            pq_enabled: snap.pq_enabled,
+            send_since_pq: snap.send_since_pq,
+            pq_mlkem_dk,
+            pq_mlkem_ek,
+            peer_pq_ek,
+            skipped,
+        })
     }
 
     fn skip_message_keys(&mut self, until: u64) -> Result<(), AiraError> {
@@ -527,6 +674,36 @@ mod tests {
             let d = bob.decrypt(&h, &e).expect("decrypt");
             assert_eq!(d, msg.as_bytes());
         }
+    }
+
+    #[test]
+    fn snapshot_roundtrip() {
+        let (mut alice, mut bob) = make_pair();
+
+        // Exchange some messages to advance state
+        for i in 0..5u8 {
+            let msg = format!("msg {i}");
+            let (h, e) = alice.encrypt(msg.as_bytes()).expect("encrypt");
+            let _ = bob.decrypt(&h, &e).expect("decrypt");
+        }
+
+        // Save Alice's state
+        let snapshot = alice.to_snapshot();
+
+        // Serialize with postcard
+        let bytes = postcard::to_allocvec(&snapshot).expect("serialize snapshot");
+        let restored_snap: RatchetSnapshot =
+            postcard::from_bytes(&bytes).expect("deserialize snapshot");
+
+        // Restore
+        let mut alice_restored =
+            RatchetSession::from_snapshot(restored_snap).expect("from_snapshot");
+
+        // Restored Alice should be able to continue the conversation
+        let msg = b"after restore";
+        let (h, e) = alice_restored.encrypt(msg).expect("encrypt after restore");
+        let d = bob.decrypt(&h, &e).expect("decrypt after restore");
+        assert_eq!(d, msg);
     }
 
     #[test]
