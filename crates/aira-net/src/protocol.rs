@@ -15,6 +15,7 @@ use iroh::protocol::{AcceptError, ProtocolHandler, Router};
 use tokio::sync::mpsc;
 use tracing::{debug, warn};
 
+use crate::blobs::BlobStore;
 use crate::connection::{read_framed, write_framed};
 use crate::relay::RelayServer;
 
@@ -172,18 +173,25 @@ impl ProtocolHandler for HandshakeHandler {
 /// - `aira/1/chat` → `ChatHandler`
 /// - `aira/1/handshake` → `HandshakeHandler`
 /// - `aira/1/relay` → `RelayServer`
+/// - `iroh-blobs` ALPN → `BlobsProtocol` (if blob store provided)
 #[must_use]
 pub fn build_router(
     endpoint: &crate::endpoint::AiraEndpoint,
     chat_handler: ChatHandler,
     handshake_handler: HandshakeHandler,
     relay_server: Arc<RelayServer>,
+    blob_store: Option<&BlobStore>,
 ) -> Router {
-    Router::builder(endpoint.endpoint().clone())
+    let mut builder = Router::builder(endpoint.endpoint().clone())
         .accept(crate::alpn::CHAT, chat_handler)
         .accept(crate::alpn::HANDSHAKE, handshake_handler)
-        .accept(crate::alpn::RELAY, relay_server)
-        .spawn()
+        .accept(crate::alpn::RELAY, relay_server);
+
+    if let Some(blobs) = blob_store {
+        builder = builder.accept(iroh_blobs::ALPN, blobs.protocol());
+    }
+
+    builder.spawn()
 }
 
 #[cfg(test)]
@@ -204,7 +212,7 @@ mod tests {
         let (hs_handler, _hs_rx) = HandshakeHandler::new(16);
         let relay = Arc::new(RelayServer::with_defaults());
 
-        let _router = build_router(&ep2, chat_handler, hs_handler, relay);
+        let _router = build_router(&ep2, chat_handler, hs_handler, relay, None);
         let ep2_addr = ep2.addr();
 
         // Connect and send a ping
@@ -233,7 +241,7 @@ mod tests {
         let (hs_handler, _hs_rx) = HandshakeHandler::new(16);
         let relay = Arc::new(RelayServer::with_defaults());
 
-        let _router = build_router(&ep2, chat_handler, hs_handler, relay);
+        let _router = build_router(&ep2, chat_handler, hs_handler, relay, None);
         let ep2_addr = ep2.addr();
 
         let conn = ep1.connect(ep2_addr, crate::alpn::CHAT).await.unwrap();

@@ -9,7 +9,7 @@ use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::mpsc;
 
-use crate::types::{DaemonRequest, DaemonResponse};
+use crate::types::{DaemonEvent, DaemonRequest, DaemonResponse};
 
 /// Maximum IPC message size (1 MB — well above any expected request).
 const MAX_IPC_MSG_SIZE: u32 = 1_048_576;
@@ -42,6 +42,19 @@ async fn write_response<W: AsyncWriteExt + Unpin>(
     Ok(())
 }
 
+/// Write a length-prefixed postcard event to an async writer.
+async fn write_event<W: AsyncWriteExt + Unpin>(
+    writer: &mut W,
+    event: &DaemonEvent,
+) -> anyhow::Result<()> {
+    let bytes = postcard::to_allocvec(event)?;
+    let len = u32::try_from(bytes.len()).map_err(|_| anyhow::anyhow!("event too large"))?;
+    writer.write_u32_le(len).await?;
+    writer.write_all(&bytes).await?;
+    writer.flush().await?;
+    Ok(())
+}
+
 /// Handler function type: processes a request and returns a response.
 pub type RequestHandler = Arc<dyn Fn(DaemonRequest) -> DaemonResponse + Send + Sync + 'static>;
 
@@ -51,6 +64,7 @@ pub type RequestHandler = Arc<dyn Fn(DaemonRequest) -> DaemonResponse + Send + S
 pub async fn start_ipc_server(
     socket_path: std::path::PathBuf,
     handler: RequestHandler,
+    event_tx: tokio::sync::broadcast::Sender<DaemonEvent>,
     mut shutdown: mpsc::Receiver<()>,
 ) -> anyhow::Result<()> {
     use tokio::net::UnixListener;
@@ -72,8 +86,9 @@ pub async fn start_ipc_server(
                 match accept {
                     Ok((stream, _addr)) => {
                         let handler = handler.clone();
+                        let event_rx = event_tx.subscribe();
                         tokio::spawn(async move {
-                            if let Err(e) = handle_connection(stream, handler).await {
+                            if let Err(e) = handle_connection(stream, handler, event_rx).await {
                                 tracing::warn!("IPC client error: {e}");
                             }
                         });
@@ -99,25 +114,45 @@ pub async fn start_ipc_server(
 async fn handle_connection(
     stream: tokio::net::UnixStream,
     handler: RequestHandler,
+    mut event_rx: tokio::sync::broadcast::Receiver<DaemonEvent>,
 ) -> anyhow::Result<()> {
-    let (mut reader, mut writer) = tokio::io::split(stream);
+    let (reader, writer) = tokio::io::split(stream);
+    let reader = Arc::new(tokio::sync::Mutex::new(reader));
+    let writer = Arc::new(tokio::sync::Mutex::new(writer));
+
+    // Spawn event forwarder
+    let event_writer = writer.clone();
+    let event_task = tokio::spawn(async move {
+        while let Ok(event) = event_rx.recv().await {
+            let mut w = event_writer.lock().await;
+            if write_event(&mut *w, &event).await.is_err() {
+                break;
+            }
+        }
+    });
+
+    // Request/response loop
     loop {
-        match read_message(&mut reader).await {
+        let mut r = reader.lock().await;
+        match read_message(&mut *r).await {
             Ok(request) => {
+                drop(r); // release reader lock before writing
                 let is_shutdown = matches!(request, DaemonRequest::Shutdown);
                 let response = handler(request);
-                write_response(&mut writer, &response).await?;
+                let mut w = writer.lock().await;
+                write_response(&mut *w, &response).await?;
                 if is_shutdown {
                     break;
                 }
             }
             Err(e) => {
-                // Connection closed or read error
                 tracing::debug!("IPC connection ended: {e}");
                 break;
             }
         }
     }
+
+    event_task.abort();
     Ok(())
 }
 
@@ -127,6 +162,7 @@ async fn handle_connection(
 pub async fn start_ipc_server(
     pipe_name: std::path::PathBuf,
     handler: RequestHandler,
+    event_tx: tokio::sync::broadcast::Sender<DaemonEvent>,
     mut shutdown: mpsc::Receiver<()>,
 ) -> anyhow::Result<()> {
     use tokio::net::windows::named_pipe::ServerOptions;
@@ -148,8 +184,9 @@ pub async fn start_ipc_server(
                 match result {
                     Ok(()) => {
                         let handler = handler.clone();
+                        let event_rx = event_tx.subscribe();
                         tokio::spawn(async move {
-                            if let Err(e) = handle_pipe_connection(server, handler).await {
+                            if let Err(e) = handle_pipe_connection(server, handler, event_rx).await {
                                 tracing::warn!("IPC pipe client error: {e}");
                             }
                         });
@@ -172,14 +209,33 @@ pub async fn start_ipc_server(
 async fn handle_pipe_connection(
     pipe: tokio::net::windows::named_pipe::NamedPipeServer,
     handler: RequestHandler,
+    mut event_rx: tokio::sync::broadcast::Receiver<DaemonEvent>,
 ) -> anyhow::Result<()> {
-    let (mut reader, mut writer) = tokio::io::split(pipe);
+    let (reader, writer) = tokio::io::split(pipe);
+    let reader = Arc::new(tokio::sync::Mutex::new(reader));
+    let writer = Arc::new(tokio::sync::Mutex::new(writer));
+
+    // Spawn event forwarder
+    let event_writer = writer.clone();
+    let event_task = tokio::spawn(async move {
+        while let Ok(event) = event_rx.recv().await {
+            let mut w = event_writer.lock().await;
+            if write_event(&mut *w, &event).await.is_err() {
+                break;
+            }
+        }
+    });
+
+    // Request/response loop
     loop {
-        match read_message(&mut reader).await {
+        let mut r = reader.lock().await;
+        match read_message(&mut *r).await {
             Ok(request) => {
+                drop(r);
                 let is_shutdown = matches!(request, DaemonRequest::Shutdown);
                 let response = handler(request);
-                write_response(&mut writer, &response).await?;
+                let mut w = writer.lock().await;
+                write_response(&mut *w, &response).await?;
                 if is_shutdown {
                     break;
                 }
@@ -190,6 +246,8 @@ async fn handle_pipe_connection(
             }
         }
     }
+
+    event_task.abort();
     Ok(())
 }
 

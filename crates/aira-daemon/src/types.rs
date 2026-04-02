@@ -59,6 +59,13 @@ pub enum DaemonRequest {
         /// Backup file path.
         path: PathBuf,
     },
+    /// Send a file to a contact.
+    SendFile {
+        /// Contact's ML-DSA public key.
+        to: Vec<u8>,
+        /// Local file path.
+        path: PathBuf,
+    },
     /// Graceful shutdown.
     Shutdown,
 }
@@ -79,8 +86,7 @@ pub enum DaemonResponse {
 }
 
 /// Asynchronous event pushed from daemon to subscribed clients.
-#[derive(Debug, Serialize, Deserialize)]
-#[allow(dead_code)] // Used by future event streaming (M5)
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum DaemonEvent {
     /// A new message was received.
     MessageReceived {
@@ -93,6 +99,29 @@ pub enum DaemonEvent {
     ContactOnline(Vec<u8>),
     /// Contact went offline.
     ContactOffline(Vec<u8>),
+    /// File transfer progress update.
+    FileProgress {
+        /// Transfer ID.
+        id: [u8; 16],
+        /// Bytes transferred so far.
+        bytes_sent: u64,
+        /// Total file size in bytes.
+        total: u64,
+    },
+    /// File transfer completed successfully.
+    FileComplete {
+        /// Transfer ID.
+        id: [u8; 16],
+        /// Local path where file was saved (for receiver).
+        path: PathBuf,
+    },
+    /// File transfer failed.
+    FileError {
+        /// Transfer ID.
+        id: [u8; 16],
+        /// Error description.
+        error: String,
+    },
 }
 
 #[cfg(test)]
@@ -139,6 +168,80 @@ mod tests {
             DaemonEvent::MessageReceived { from, payload } => {
                 assert_eq!(from.len(), 16);
                 assert_eq!(payload, b"content");
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn send_file_request_roundtrip() {
+        let req = DaemonRequest::SendFile {
+            to: vec![0xAA; 32],
+            path: PathBuf::from("/tmp/test.txt"),
+        };
+        let bytes = postcard::to_allocvec(&req).expect("serialize");
+        let decoded: DaemonRequest = postcard::from_bytes(&bytes).expect("deserialize");
+        match decoded {
+            DaemonRequest::SendFile { to, path } => {
+                assert_eq!(to, vec![0xAA; 32]);
+                assert_eq!(path, PathBuf::from("/tmp/test.txt"));
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn file_progress_event_roundtrip() {
+        let event = DaemonEvent::FileProgress {
+            id: [0x42; 16],
+            bytes_sent: 1024,
+            total: 65536,
+        };
+        let bytes = postcard::to_allocvec(&event).expect("serialize");
+        let decoded: DaemonEvent = postcard::from_bytes(&bytes).expect("deserialize");
+        match decoded {
+            DaemonEvent::FileProgress {
+                id,
+                bytes_sent,
+                total,
+            } => {
+                assert_eq!(id, [0x42; 16]);
+                assert_eq!(bytes_sent, 1024);
+                assert_eq!(total, 65536);
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn file_complete_event_roundtrip() {
+        let event = DaemonEvent::FileComplete {
+            id: [0x01; 16],
+            path: PathBuf::from("/home/user/.aira/downloads/photo.jpg"),
+        };
+        let bytes = postcard::to_allocvec(&event).expect("serialize");
+        let decoded: DaemonEvent = postcard::from_bytes(&bytes).expect("deserialize");
+        match decoded {
+            DaemonEvent::FileComplete { id, path } => {
+                assert_eq!(id, [0x01; 16]);
+                assert_eq!(path, PathBuf::from("/home/user/.aira/downloads/photo.jpg"));
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn file_error_event_roundtrip() {
+        let event = DaemonEvent::FileError {
+            id: [0xFF; 16],
+            error: "connection lost".into(),
+        };
+        let bytes = postcard::to_allocvec(&event).expect("serialize");
+        let decoded: DaemonEvent = postcard::from_bytes(&bytes).expect("deserialize");
+        match decoded {
+            DaemonEvent::FileError { id, error } => {
+                assert_eq!(id, [0xFF; 16]);
+                assert_eq!(error, "connection lost");
             }
             _ => panic!("wrong variant"),
         }

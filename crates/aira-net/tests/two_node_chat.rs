@@ -22,7 +22,7 @@ async fn two_nodes_exchange_message() {
     let (chat_handler, mut incoming_rx) = ChatHandler::new(16);
     let (hs_handler, _hs_rx) = HandshakeHandler::new(16);
     let relay = Arc::new(RelayServer::with_defaults());
-    let router = build_router(&bob, chat_handler, hs_handler, relay);
+    let router = build_router(&bob, chat_handler, hs_handler, relay, None);
 
     let bob_addr = bob.addr();
 
@@ -97,7 +97,7 @@ async fn ping_pong_over_chat() {
     let (chat_handler, _rx) = ChatHandler::new(16);
     let (hs_handler, _hs_rx) = HandshakeHandler::new(16);
     let relay = Arc::new(RelayServer::with_defaults());
-    let router = build_router(&bob, chat_handler, hs_handler, relay);
+    let router = build_router(&bob, chat_handler, hs_handler, relay, None);
 
     let conn = alice
         .connect(bob.addr(), aira_net::alpn::CHAT)

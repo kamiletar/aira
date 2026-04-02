@@ -27,6 +27,7 @@ async fn message_relay_when_peer_offline() {
         chat_handler,
         hs_handler,
         Arc::clone(&relay_server),
+        None,
     );
     let relay_addr = relay_ep.addr();
 
@@ -116,6 +117,7 @@ async fn relay_quota_enforcement() {
         chat_handler,
         hs_handler,
         Arc::clone(&relay_server),
+        None,
     );
 
     let client_ep = AiraEndpoint::bind_for_test(None).await.unwrap();

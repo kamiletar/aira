@@ -14,6 +14,7 @@
 #![allow(clippy::missing_errors_doc)]
 #![allow(clippy::missing_panics_doc)]
 
+pub mod blobs;
 pub mod connection;
 pub mod discovery;
 pub mod endpoint;
@@ -73,6 +74,15 @@ pub enum NetError {
 
     #[error("operation timed out")]
     Timeout,
+
+    #[error("blob store error: {0}")]
+    BlobStore(String),
+
+    #[error("file not found: {0}")]
+    FileNotFound(String),
+
+    #[error("file too large: {size} bytes (max {max})")]
+    FileTooLarge { size: u64, max: u64 },
 
     #[error("iroh error: {0}")]
     Iroh(#[from] anyhow::Error),

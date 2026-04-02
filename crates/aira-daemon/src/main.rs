@@ -13,11 +13,13 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::Result;
-use tokio::sync::mpsc;
+use tokio::sync::{broadcast, mpsc};
 mod ipc;
+mod transfers;
 mod types;
 
-use types::{DaemonRequest, DaemonResponse};
+use transfers::TransferManager;
+use types::{DaemonEvent, DaemonRequest, DaemonResponse};
 
 /// Default data directory.
 fn data_dir() -> PathBuf {
@@ -103,18 +105,47 @@ async fn main() -> Result<()> {
         tracing::info!("dedup GC: removed {gc_count} expired entries");
     }
 
+    // Event broadcast channel for IPC clients
+    let (event_tx, _) = broadcast::channel::<DaemonEvent>(256);
+
+    // Blob store for file transfer (in-memory, transient)
+    let blob_store = aira_net::blobs::BlobStore::new();
+    tracing::info!("blob store initialized (in-memory)");
+
+    // Transfer manager
+    let transfer_mgr = TransferManager::new(event_tx.clone());
+
+    // Create downloads directory
+    let downloads_dir = dir.join("downloads");
+    std::fs::create_dir_all(&downloads_dir)?;
+    tracing::info!("downloads directory: {}", downloads_dir.display());
+
     // Shutdown channel
     let (shutdown_tx, shutdown_rx) = mpsc::channel::<()>(1);
 
     // Build request handler
     let handler_storage = storage.clone();
+    let handler_blob_store = blob_store.clone();
+    let handler_transfer_mgr = transfer_mgr.clone();
     let shutdown_signal = shutdown_tx.clone();
-    let handler: ipc::RequestHandler =
-        Arc::new(move |request| handle_request(&handler_storage, &shutdown_signal, request));
+    let handler: ipc::RequestHandler = Arc::new(move |request| {
+        handle_request(
+            &handler_storage,
+            &handler_blob_store,
+            &handler_transfer_mgr,
+            &shutdown_signal,
+            request,
+        )
+    });
 
     // Start IPC server
     let ipc_socket = ipc_path(&dir);
-    let ipc_handle = tokio::spawn(ipc::start_ipc_server(ipc_socket, handler, shutdown_rx));
+    let ipc_handle = tokio::spawn(ipc::start_ipc_server(
+        ipc_socket,
+        handler,
+        event_tx,
+        shutdown_rx,
+    ));
 
     // Periodic timers
     let ttl_storage = storage.clone();
@@ -162,6 +193,8 @@ async fn main() -> Result<()> {
 /// Handle a single IPC request.
 fn handle_request(
     storage: &aira_storage::Storage,
+    blob_store: &aira_net::blobs::BlobStore,
+    transfer_mgr: &TransferManager,
     shutdown_tx: &mpsc::Sender<()>,
     request: DaemonRequest,
 ) -> DaemonResponse {
@@ -233,11 +266,84 @@ fn handle_request(
                 Err(e) => DaemonResponse::Error(e.to_string()),
             }
         }
+        DaemonRequest::SendFile { to: _, path } => {
+            handle_send_file(blob_store, transfer_mgr, path)
+        }
         DaemonRequest::Shutdown => {
             let _ = shutdown_tx.try_send(());
             DaemonResponse::Ok
         }
     }
+}
+
+/// Handle a `SendFile` request: validate, import to blob store, track transfer.
+fn handle_send_file(
+    blob_store: &aira_net::blobs::BlobStore,
+    transfer_mgr: &TransferManager,
+    path: std::path::PathBuf,
+) -> DaemonResponse {
+    if !path.exists() {
+        return DaemonResponse::Error(format!("file not found: {}", path.display()));
+    }
+
+    let metadata = match std::fs::metadata(&path) {
+        Ok(m) => m,
+        Err(e) => return DaemonResponse::Error(format!("cannot read file: {e}")),
+    };
+    let file_size = metadata.len();
+
+    if file_size > aira_net::blobs::MAX_FILE_SIZE {
+        return DaemonResponse::Error(format!(
+            "file too large: {} bytes (max {} bytes)",
+            file_size,
+            aira_net::blobs::MAX_FILE_SIZE
+        ));
+    }
+
+    let transfer_id = rand_id();
+    let file_name = path.file_name().map_or_else(
+        || "unnamed".to_string(),
+        |n| n.to_string_lossy().to_string(),
+    );
+
+    let bs = blob_store.clone();
+    let tm = transfer_mgr.clone();
+    tokio::spawn(async move {
+        let hash_result = if aira_net::blobs::BlobStore::is_inline(file_size) {
+            match tokio::fs::read(&path).await {
+                Ok(data) => {
+                    let hash_bytes = blake3::hash(&data);
+                    bs.import_bytes(data.as_slice())
+                        .await
+                        .map(|h| (h, file_size, *hash_bytes.as_bytes()))
+                }
+                Err(e) => Err(aira_net::NetError::BlobStore(format!("read file: {e}"))),
+            }
+        } else {
+            bs.import_file(&path).await.map(|(h, s)| {
+                let hash_bytes: [u8; 32] = h.into();
+                (h, s, hash_bytes)
+            })
+        };
+
+        match hash_result {
+            Ok((_blob_hash, size, hash_bytes)) => {
+                tm.start_send(transfer_id, file_name, size, hash_bytes)
+                    .await;
+                tm.update_progress(transfer_id, 0).await;
+                // TODO(M5): send FileStart to peer via encrypted channel
+                tm.update_progress(transfer_id, size).await;
+                tm.complete(transfer_id, path).await;
+            }
+            Err(e) => {
+                tm.start_send(transfer_id, file_name, file_size, [0u8; 32])
+                    .await;
+                tm.fail(transfer_id, e.to_string()).await;
+            }
+        }
+    });
+
+    DaemonResponse::Ok
 }
 
 /// Generate a random 16-byte message ID.

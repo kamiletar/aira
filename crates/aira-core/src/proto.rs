@@ -218,4 +218,8 @@ pub enum AiraError {
     Storage(String),
     #[error("serialization error: {0}")]
     Serialization(String),
+    #[error("file transfer error: {0}")]
+    FileTransfer(String),
+    #[error("hash mismatch: expected {expected}, got {actual}")]
+    HashMismatch { expected: String, actual: String },
 }

@@ -11,7 +11,7 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "0.1.3"
+version = "0.1.4"
 edition = "2021"
 authors = ["Aira contributors"]
 license = "MIT OR Apache-2.0"
@@ -89,6 +89,9 @@ kem = "0.2"
 
 # Cancellation
 tokio-util = { version = "0.7", features = ["rt"] }
+
+# Bytes
+bytes = "1"
 
 # Утилиты
 thiserror = "2"
