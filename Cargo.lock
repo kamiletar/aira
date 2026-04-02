@@ -48,7 +48,7 @@ dependencies = [
 
 [[package]]
 name = "aira-cli"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "aira-core",
  "anyhow",
@@ -63,7 +63,7 @@ dependencies = [
 
 [[package]]
 name = "aira-core"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "argon2",
@@ -90,7 +90,7 @@ dependencies = [
 
 [[package]]
 name = "aira-daemon"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "aira-core",
  "aira-net",
@@ -106,7 +106,7 @@ dependencies = [
 
 [[package]]
 name = "aira-net"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "aira-core",
  "anyhow",
@@ -118,13 +118,14 @@ dependencies = [
  "serde",
  "thiserror 2.0.18",
  "tokio",
+ "tokio-util",
  "tracing",
  "zeroize",
 ]
 
 [[package]]
 name = "aira-storage"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "aira-core",
  "anyhow",

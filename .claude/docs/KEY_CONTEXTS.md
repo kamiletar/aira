@@ -45,9 +45,9 @@ Canonical list of all KDF context strings used in Aira.
 
 ## Relay / Network
 
-| Derivation                            | Purpose                  | File                        |
-|---------------------------------------|--------------------------|-----------------------------|
-| `BLAKE3(shared_secret ‖ "mailbox")`   | Relay mailbox ID         | `aira-net/src/relay.rs`     |
+| Context string                | Purpose                        | File                        |
+|-------------------------------|--------------------------------|-----------------------------|
+| `aira/relay/mailbox/v1`      | Pairwise relay mailbox ID      | `aira-net/src/relay.rs`     |
 
 ## Generation Suffix
 

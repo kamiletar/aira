@@ -19,7 +19,7 @@ pub enum Message {
     Pong,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EncryptedEnvelope {
     /// ChaCha20-Poly1305 nonce (12 bytes)
     pub nonce: [u8; 12],
