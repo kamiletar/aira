@@ -11,7 +11,7 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "0.1.4"
+version = "0.1.5"
 edition = "2021"
 authors = ["Aira contributors"]
 license = "MIT OR Apache-2.0"
@@ -92,6 +92,18 @@ tokio-util = { version = "0.7", features = ["rt"] }
 
 # Bytes
 bytes = "1"
+
+# Hex encoding/decoding
+hex = "0.4"
+
+# Desktop notifications
+notify-rust = "4"
+
+# Async utilities
+futures = "0.3"
+
+# Home directory
+dirs = "5"
 
 # Утилиты
 thiserror = "2"

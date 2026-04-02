@@ -9,7 +9,7 @@ use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::mpsc;
 
-use crate::types::{DaemonEvent, DaemonRequest, DaemonResponse};
+use aira_daemon::types::{DaemonEvent, DaemonRequest, DaemonResponse, ServerMessage};
 
 /// Maximum IPC message size (1 MB — well above any expected request).
 const MAX_IPC_MSG_SIZE: u32 = 1_048_576;
@@ -29,30 +29,33 @@ async fn read_message<R: AsyncReadExt + Unpin>(reader: &mut R) -> anyhow::Result
     Ok(req)
 }
 
-/// Write a length-prefixed postcard message to an async writer.
-async fn write_response<W: AsyncWriteExt + Unpin>(
+/// Write a length-prefixed `ServerMessage` to an async writer.
+async fn write_server_message<W: AsyncWriteExt + Unpin>(
     writer: &mut W,
-    response: &DaemonResponse,
+    msg: &ServerMessage,
 ) -> anyhow::Result<()> {
-    let bytes = postcard::to_allocvec(response)?;
-    let len = u32::try_from(bytes.len()).map_err(|_| anyhow::anyhow!("response too large"))?;
+    let bytes = postcard::to_allocvec(msg)?;
+    let len = u32::try_from(bytes.len()).map_err(|_| anyhow::anyhow!("message too large"))?;
     writer.write_u32_le(len).await?;
     writer.write_all(&bytes).await?;
     writer.flush().await?;
     Ok(())
 }
 
-/// Write a length-prefixed postcard event to an async writer.
+/// Write a response wrapped in `ServerMessage`.
+async fn write_response<W: AsyncWriteExt + Unpin>(
+    writer: &mut W,
+    response: &DaemonResponse,
+) -> anyhow::Result<()> {
+    write_server_message(writer, &ServerMessage::Response(response.clone())).await
+}
+
+/// Write an event wrapped in `ServerMessage`.
 async fn write_event<W: AsyncWriteExt + Unpin>(
     writer: &mut W,
     event: &DaemonEvent,
 ) -> anyhow::Result<()> {
-    let bytes = postcard::to_allocvec(event)?;
-    let len = u32::try_from(bytes.len()).map_err(|_| anyhow::anyhow!("event too large"))?;
-    writer.write_u32_le(len).await?;
-    writer.write_all(&bytes).await?;
-    writer.flush().await?;
-    Ok(())
+    write_server_message(writer, &ServerMessage::Event(event.clone())).await
 }
 
 /// Handler function type: processes a request and returns a response.
@@ -286,7 +289,37 @@ mod tests {
             .await
             .expect("read payload");
 
-        let decoded: DaemonResponse = postcard::from_bytes(&payload).expect("deserialize");
-        assert!(matches!(decoded, DaemonResponse::Ok));
+        // Now wrapped in ServerMessage
+        let decoded: ServerMessage = postcard::from_bytes(&payload).expect("deserialize");
+        assert!(matches!(
+            decoded,
+            ServerMessage::Response(DaemonResponse::Ok)
+        ));
+    }
+
+    #[tokio::test]
+    async fn event_framing_roundtrip() {
+        let mut buf = Vec::new();
+        let event = DaemonEvent::ContactOnline(vec![0xBB; 32]);
+        write_event(&mut buf, &event).await.expect("write");
+
+        let mut cursor = std::io::Cursor::new(buf);
+        let mut tokio_cursor = tokio::io::BufReader::new(&mut cursor);
+        let len = tokio::io::AsyncReadExt::read_u32_le(&mut tokio_cursor)
+            .await
+            .expect("read len");
+
+        let mut payload = vec![0u8; len as usize];
+        tokio::io::AsyncReadExt::read_exact(&mut tokio_cursor, &mut payload)
+            .await
+            .expect("read payload");
+
+        let decoded: ServerMessage = postcard::from_bytes(&payload).expect("deserialize");
+        match decoded {
+            ServerMessage::Event(DaemonEvent::ContactOnline(pk)) => {
+                assert_eq!(pk, vec![0xBB; 32]);
+            }
+            _ => panic!("expected ServerMessage::Event(ContactOnline)"),
+        }
     }
 }

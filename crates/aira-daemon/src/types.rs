@@ -71,7 +71,7 @@ pub enum DaemonRequest {
 }
 
 /// Response from daemon to client.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum DaemonResponse {
     /// Operation succeeded (no data to return).
     Ok,
@@ -83,6 +83,19 @@ pub enum DaemonResponse {
     Contacts(Vec<aira_storage::ContactInfo>),
     /// Our own public key bytes.
     MyAddress(Vec<u8>),
+}
+
+/// Wrapper for all messages sent from daemon to client over IPC.
+///
+/// Both responses and events travel over the same socket connection.
+/// This enum lets the client distinguish between a direct response to
+/// its request and an asynchronous event from the daemon.
+#[derive(Debug, Serialize, Deserialize)]
+pub enum ServerMessage {
+    /// Direct response to a `DaemonRequest`.
+    Response(DaemonResponse),
+    /// Asynchronous event (new message, contact online, file progress, etc.).
+    Event(DaemonEvent),
 }
 
 /// Asynchronous event pushed from daemon to subscribed clients.
@@ -225,6 +238,30 @@ mod tests {
             DaemonEvent::FileComplete { id, path } => {
                 assert_eq!(id, [0x01; 16]);
                 assert_eq!(path, PathBuf::from("/home/user/.aira/downloads/photo.jpg"));
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn server_message_response_roundtrip() {
+        let msg = ServerMessage::Response(DaemonResponse::Ok);
+        let bytes = postcard::to_allocvec(&msg).expect("serialize");
+        let decoded: ServerMessage = postcard::from_bytes(&bytes).expect("deserialize");
+        match decoded {
+            ServerMessage::Response(DaemonResponse::Ok) => {}
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn server_message_event_roundtrip() {
+        let msg = ServerMessage::Event(DaemonEvent::ContactOnline(vec![0xAB; 32]));
+        let bytes = postcard::to_allocvec(&msg).expect("serialize");
+        let decoded: ServerMessage = postcard::from_bytes(&bytes).expect("deserialize");
+        match decoded {
+            ServerMessage::Event(DaemonEvent::ContactOnline(pk)) => {
+                assert_eq!(pk.len(), 32);
             }
             _ => panic!("wrong variant"),
         }

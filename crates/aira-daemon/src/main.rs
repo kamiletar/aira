@@ -16,8 +16,8 @@ use anyhow::Result;
 use tokio::sync::{broadcast, mpsc};
 mod ipc;
 mod transfers;
-mod types;
 
+use aira_daemon::types;
 use transfers::TransferManager;
 use types::{DaemonEvent, DaemonRequest, DaemonResponse};
 
@@ -266,9 +266,7 @@ fn handle_request(
                 Err(e) => DaemonResponse::Error(e.to_string()),
             }
         }
-        DaemonRequest::SendFile { to: _, path } => {
-            handle_send_file(blob_store, transfer_mgr, path)
-        }
+        DaemonRequest::SendFile { to: _, path } => handle_send_file(blob_store, transfer_mgr, path),
         DaemonRequest::Shutdown => {
             let _ = shutdown_tx.try_send(());
             DaemonResponse::Ok
