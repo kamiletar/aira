@@ -14,15 +14,18 @@ tokio.workspace = true
 serde.workspace = true
 postcard.workspace = true
 governor.workspace = true
-# ptrs.workspace = true  # TODO(M7): verify crate name/version before enabling
 thiserror.workspace = true
 anyhow.workspace = true
 tracing.workspace = true
 zeroize.workspace = true
 blake3.workspace = true
 tokio-util.workspace = true
-
 bytes.workspace = true
+rand.workspace = true
+async-trait = "0.1"
+
+# CDN relay transport (optional)
+reqwest = { version = "0.12", features = ["rustls-tls"], optional = true }
 
 [dev-dependencies]
 tempfile = "3"
@@ -31,7 +34,8 @@ tempfile = "3"
 default = []
 obfs4 = []
 mimicry = []
+cdn = ["dep:reqwest"]
 reality = []
 tor = []
-# tor = ["dep:arti-client"]  # TODO(M7): enable when arti-client is added
+# tor = ["dep:arti-client"]  # TODO(M12): enable when arti-client is added
 # arti-client = { version = "0.27", optional = true }

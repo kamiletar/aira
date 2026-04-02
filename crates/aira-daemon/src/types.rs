@@ -66,6 +66,17 @@ pub enum DaemonRequest {
         /// Local file path.
         path: PathBuf,
     },
+    /// Set the active transport mode (SPEC.md §11A).
+    ///
+    /// Mode string: `"direct"`, `"obfs4"`, `"mimicry:dns"`, `"mimicry:quic:example.com"`,
+    /// `"cdn:https://worker.example.com"`.
+    SetTransportMode {
+        /// Transport mode string (parsed by `TransportMode::from_str`).
+        mode: String,
+    },
+    /// Get the current transport mode.
+    GetTransportMode,
+
     /// Graceful shutdown.
     Shutdown,
 
@@ -132,6 +143,9 @@ pub enum DaemonResponse {
     Contacts(Vec<aira_storage::ContactInfo>),
     /// Our own public key bytes.
     MyAddress(Vec<u8>),
+
+    /// Current transport mode string.
+    TransportMode(String),
 
     // ─── Group responses ────────────────────────────────────────────────
     /// Group created successfully.
@@ -521,6 +535,40 @@ mod tests {
                 assert_eq!(name, "Group Alpha");
                 assert_eq!(invited_by, vec![0xDD; 32]);
             }
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn set_transport_mode_request_roundtrip() {
+        let req = DaemonRequest::SetTransportMode {
+            mode: "mimicry:quic:example.com".into(),
+        };
+        let bytes = postcard::to_allocvec(&req).expect("serialize");
+        let decoded: DaemonRequest = postcard::from_bytes(&bytes).expect("deserialize");
+        match decoded {
+            DaemonRequest::SetTransportMode { mode } => {
+                assert_eq!(mode, "mimicry:quic:example.com");
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn get_transport_mode_request_roundtrip() {
+        let req = DaemonRequest::GetTransportMode;
+        let bytes = postcard::to_allocvec(&req).expect("serialize");
+        let decoded: DaemonRequest = postcard::from_bytes(&bytes).expect("deserialize");
+        assert!(matches!(decoded, DaemonRequest::GetTransportMode));
+    }
+
+    #[test]
+    fn transport_mode_response_roundtrip() {
+        let resp = DaemonResponse::TransportMode("obfs4".into());
+        let bytes = postcard::to_allocvec(&resp).expect("serialize");
+        let decoded: DaemonResponse = postcard::from_bytes(&bytes).expect("deserialize");
+        match decoded {
+            DaemonResponse::TransportMode(mode) => assert_eq!(mode, "obfs4"),
             _ => panic!("wrong variant"),
         }
     }

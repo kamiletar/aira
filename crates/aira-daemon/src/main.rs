@@ -268,6 +268,10 @@ fn handle_request(
             }
         }
         DaemonRequest::SendFile { to: _, path } => handle_send_file(blob_store, transfer_mgr, path),
+        // ─── Transport operations (SPEC.md §11A) ────────────────────────
+        DaemonRequest::SetTransportMode { mode } => handle_set_transport_mode(storage, &mode),
+        DaemonRequest::GetTransportMode => handle_get_transport_mode(storage),
+
         DaemonRequest::Shutdown => {
             let _ = shutdown_tx.try_send(());
             DaemonResponse::Ok
@@ -470,6 +474,38 @@ fn handle_leave_group(storage: &aira_storage::Storage, group_id: &[u8; 32]) -> D
     match aira_storage::groups::remove_group(storage, group_id) {
         Ok(()) => DaemonResponse::Ok,
         Err(e) => DaemonResponse::Error(e.to_string()),
+    }
+}
+
+/// Storage key for persisted transport mode.
+const TRANSPORT_MODE_KEY: &str = "transport/mode";
+
+/// Handle `SetTransportMode` request.
+fn handle_set_transport_mode(storage: &aira_storage::Storage, mode_str: &str) -> DaemonResponse {
+    // Validate the mode string parses correctly.
+    if let Err(e) = mode_str.parse::<aira_net::transport::TransportMode>() {
+        return DaemonResponse::Error(format!("invalid transport mode: {e}"));
+    }
+
+    // Persist to storage.
+    match aira_storage::settings::set(storage, TRANSPORT_MODE_KEY, mode_str.as_bytes()) {
+        Ok(()) => {
+            tracing::info!("transport mode set to: {mode_str}");
+            DaemonResponse::Ok
+        }
+        Err(e) => DaemonResponse::Error(format!("failed to save transport mode: {e}")),
+    }
+}
+
+/// Handle `GetTransportMode` request.
+fn handle_get_transport_mode(storage: &aira_storage::Storage) -> DaemonResponse {
+    match aira_storage::settings::get(storage, TRANSPORT_MODE_KEY) {
+        Ok(Some(bytes)) => {
+            let mode_str = String::from_utf8_lossy(&bytes).to_string();
+            DaemonResponse::TransportMode(mode_str)
+        }
+        Ok(None) => DaemonResponse::TransportMode("direct".into()),
+        Err(e) => DaemonResponse::Error(format!("failed to read transport mode: {e}")),
     }
 }
 

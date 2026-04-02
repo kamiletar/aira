@@ -66,6 +66,11 @@ async fn main() -> Result<()> {
     {
         app.my_address = addr;
     }
+    if let Ok(DaemonResponse::TransportMode(mode)) =
+        client.request(&DaemonRequest::GetTransportMode).await
+    {
+        app.transport_mode = mode;
+    }
 
     // Load history for first contact
     if let Some(contact) = app.contacts.first() {
@@ -415,7 +420,25 @@ async fn execute_command(app: &mut App, client: &DaemonClient, cmd: CliCommand) 
             }
         }
         CliCommand::Transport { mode } => {
-            app.set_status(format!("Transport mode: {mode} (M7+)"));
+            if mode.is_empty() {
+                // Show current mode.
+                app.set_status(format!(
+                    "Transport: {} | /transport <direct|obfs4|mimicry:dns|mimicry:quic:SNI|cdn:URL>",
+                    app.transport_mode
+                ));
+            } else {
+                match client
+                    .request(&DaemonRequest::SetTransportMode { mode: mode.clone() })
+                    .await
+                {
+                    Ok(DaemonResponse::Ok) => {
+                        app.transport_mode.clone_from(&mode);
+                        app.set_status(format!("Transport mode set: {mode}"));
+                    }
+                    Ok(DaemonResponse::Error(e)) => app.set_status(format!("Error: {e}")),
+                    _ => {}
+                }
+            }
         }
         CliCommand::Verify { .. } => {
             app.set_status("Safety Number verification (coming in M6)");

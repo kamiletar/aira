@@ -12,7 +12,7 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "0.2.1"
+version = "0.2.2"
 edition = "2021"
 authors = ["Aira contributors"]
 license = "MIT OR Apache-2.0"
@@ -105,6 +105,9 @@ futures = "0.3"
 
 # Home directory
 dirs = "5"
+
+# Async trait (transport layer)
+async-trait = "0.1"
 
 # Утилиты
 thiserror = "2"

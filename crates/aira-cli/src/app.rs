@@ -99,6 +99,10 @@ pub struct App {
     /// Selected group index in the groups list.
     #[allow(dead_code)]
     pub selected_group: usize,
+
+    // ─── Transport state (SPEC.md §11A) ────────────────────────────────
+    /// Current transport mode string (from daemon).
+    pub transport_mode: String,
 }
 
 impl App {
@@ -126,6 +130,7 @@ impl App {
             group_messages: HashMap::new(),
             group_unread: HashMap::new(),
             selected_group: 0,
+            transport_mode: "direct".into(),
         }
     }
 

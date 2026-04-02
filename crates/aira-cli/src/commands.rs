@@ -186,14 +186,9 @@ pub fn parse(input: &str) -> Result<CliCommand, String> {
                 path: PathBuf::from(args),
             })
         }
-        "transport" => {
-            if args.is_empty() {
-                return Err("usage: /transport <direct|obfs4|mimicry|reality|tor>".into());
-            }
-            Ok(CliCommand::Transport {
-                mode: args.to_string(),
-            })
-        }
+        "transport" => Ok(CliCommand::Transport {
+            mode: args.to_string(),
+        }),
         "mute" => {
             if args.is_empty() {
                 return Err("usage: /mute <contact> [duration]".into());
@@ -553,6 +548,28 @@ mod tests {
             cmd,
             CliCommand::Transport {
                 mode: "obfs4".into(),
+            }
+        );
+    }
+
+    #[test]
+    fn parse_transport_no_args() {
+        let cmd = parse("/transport").unwrap();
+        assert_eq!(
+            cmd,
+            CliCommand::Transport {
+                mode: String::new(),
+            }
+        );
+    }
+
+    #[test]
+    fn parse_transport_mimicry() {
+        let cmd = parse("/transport mimicry:quic:example.com").unwrap();
+        assert_eq!(
+            cmd,
+            CliCommand::Transport {
+                mode: "mimicry:quic:example.com".into(),
             }
         );
     }
