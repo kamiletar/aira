@@ -7,12 +7,12 @@ members = [
     "crates/aira-cli",
     "crates/aira-bot",
     "crates/aira-gui",
-    # "crates/aira-ffi",   # v0.3
+    "crates/aira-ffi",
 ]
 resolver = "2"
 
 [workspace.package]
-version = "0.3.0"
+version = "0.3.1"
 edition = "2021"
 authors = ["Aira contributors"]
 license = "MIT OR Apache-2.0"
@@ -83,7 +83,7 @@ rfd = "0.15"
 open = "5"
 
 # FFI биндинги (v0.3)
-# uniffi = "0.28"
+uniffi = { version = "0.28", features = ["cli"] }
 
 # RNG
 rand = "0.8"

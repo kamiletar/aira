@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use tokio::sync::{broadcast, RwLock};
 
-use aira_daemon::types::DaemonEvent;
+use crate::types::DaemonEvent;
 
 /// Direction of a file transfer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
