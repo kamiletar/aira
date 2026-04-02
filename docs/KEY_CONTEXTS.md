@@ -37,5 +37,6 @@
 | Контекст | Назначение | Крейт |
 |----------|-----------|-------|
 | `aira/obfs/session/0` | Obfuscation session key (XOR keystream) | aira-net/transport |
+| `aira/reality/sid/0` | REALITY short ID derivation from PSK | aira-net/transport |
 | `aira/reality/auth/0` | REALITY authentication MAC key derivation | aira-net/transport |
 | `aira/reality/session/0` | REALITY session key derivation | aira-net/transport |

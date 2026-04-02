@@ -157,29 +157,67 @@ pub enum CpsToken {
 
 ### 11A.5 REALITY-like Transport (защита от active probing)
 
-Самый эффективный метод против GFW-уровня DPI:
+TCP-level selective proxy — самый эффективный метод против GFW-уровня DPI.
+Сервер действует как **TCP-прокси**: парсит ClientHello, проверяет Session ID,
+и либо обслуживает Aira клиента, либо прозрачно проксирует к реальному бэкенду.
 
 ```
-Клиент                     Сервер Aira                   Реальный сайт
+Клиент                     Сервер Aira                   Реальный сайт (apple.com)
   |                           |                              |
   |--- TLS ClientHello ------>| (SNI: apple.com)             |
-  |   (выглядит как Chrome)   |                              |
-  |                           |-- Проверка: наш клиент? --   |
-  |                           |   ДА: aira handshake         |
-  |<-- aira session --------->|                              |
+  |   Session ID[0..8] =     |                              |
+  |   BLAKE3("aira/reality/  |                              |
+  |    sid/0", PSK)[0..8]    |                              |
+  |                           |-- Парсинг Session ID ---     |
   |                           |                              |
-  |   НЕТ (active probe):    |                              |
-  |                           |--- Прокси к apple.com ------>|
-  |<-- apple.com response ----|<-- Реальный ответ -----------|
-  |   (DPI видит легитимный   |                              |
-  |    apple.com трафик)      |                              |
+  | [Аира клиент — short_id верен]:                          |
+  |<-- TLS ServerHello -------|  (ephemeral self-signed cert)|
+  |<-- TLS Certificate -------|  (клиент: AcceptAnyCert)    |
+  |--- TLS Finished --------->|                              |
+  |   [TLS 1.3 туннель]      |                              |
+  |--- [0xA1][nonce][MAC] --->|  Аира аутентификация        |
+  |<-- [0xA2][nonce] ---------|  (BLAKE3-MAC + PSK)         |
+  |=== Аира данные (XOR) ===>|  Framed XOR keystream       |
+  |                           |                              |
+  | [Active probe — short_id неверен]:                       |
+  |                           |--- ClientHello (forward) --->|
+  |                           |<--- ServerHello + Cert ------|
+  |<-- (TCP proxy) -----------|<--- (TCP proxy) ------------|
+  |   DPI видит настоящий     |   tokio::io::copy_bidi      |
+  |   apple.com трафик        |                              |
 ```
 
-- Используется uTLS для мимикрии TLS fingerprint браузера
-  (Chrome, Firefox, Safari, random)
-- Не нужен собственный домен или TLS сертификат
-- X25519 pre-shared key для идентификации клиента
-- Реализация потребует порта из Xray REALITY (Go → Rust)
+**Архитектура:**
+
+1. **ClientHello parsing** — сервер парсит TLS Record Layer на уровне TCP,
+   извлекает Session ID (байты 44..76 сырого TLS record)
+2. **Short ID** — первые 8 байт `BLAKE3("aira/reality/sid/0", PSK)`,
+   клиент внедряет их в Session ID поле ClientHello
+3. **Аутентификация** — если short_id верен, сервер генерирует ephemeral
+   self-signed cert (`rcgen`), завершает TLS 1.3 handshake, затем
+   Aira BLAKE3-MAC аутентификация внутри TLS туннеля
+4. **Active probing fallback** — если short_id неверен, сервер открывает
+   TCP к реальному бэкенду (apple.com:443), пересылает ClientHello и
+   запускает `copy_bidirectional` — пробер получает настоящий apple.com
+
+**Криптография:**
+
+- Browser fingerprint mimicry (Chrome/Firefox/Safari cipher suite ordering)
+- `AcceptAnyCertVerifier` на клиенте — TLS только для DPI камуфляжа,
+  аутентификация через PSK + BLAKE3-MAC
+- Session ID patching — перехват сырых TLS байтов для внедрения short_id
+- KDF контексты: `aira/reality/sid/0`, `aira/reality/auth/0`,
+  `aira/reality/session/0`
+
+**Защита от угроз:**
+
+| Угроза | Митигация |
+|--------|-----------|
+| Passive DPI | TLS 1.3 ClientHello с browser fingerprint |
+| Active probing | Настоящий apple.com контент через TCP proxy |
+| SNI/IP mismatch | Пробер подтверждает: IP отвечает как apple.com |
+| Replay attack | Timestamp ±60s + random nonce |
+| Session ID brute force | 8 байт = 2^64 вариантов, BLAKE3 KDF |
 
 ### 11A.6 Интеграция с iroh
 

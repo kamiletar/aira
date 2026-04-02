@@ -76,6 +76,9 @@ rustls = { version = "0.23", default-features = false, features = ["std", "ring"
 tokio-rustls = "0.26"
 webpki-roots = "1"
 
+# Ephemeral TLS certificates for REALITY (M12)
+rcgen = "0.13"
+
 # Tor transport (M12)
 tokio-socks = "0.5"
 

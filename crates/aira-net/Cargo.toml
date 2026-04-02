@@ -35,6 +35,9 @@ webpki-roots = { workspace = true, optional = true }
 # Tor transport (M12, optional)
 tokio-socks = { workspace = true, optional = true }
 
+# Ephemeral TLS certificates for REALITY (M12, optional)
+rcgen = { workspace = true, optional = true }
+
 [dev-dependencies]
 tempfile = "3"
 
@@ -43,5 +46,5 @@ default = []
 obfs4 = []
 mimicry = []
 cdn = ["dep:reqwest"]
-reality = ["dep:rustls", "dep:tokio-rustls", "dep:webpki-roots"]
+reality = ["dep:rustls", "dep:tokio-rustls", "dep:webpki-roots", "dep:rcgen"]
 tor = ["dep:tokio-socks"]
