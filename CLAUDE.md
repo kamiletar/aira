@@ -6,13 +6,13 @@
 
 ## Проект
 
-**Aira** — постквантовый P2P мессенджер на Rust. Полная спека: `SPEC.md`.
+**Aira** — постквантовый P2P мессенджер на Rust. Спека разбита на `spec/*.md`, индекс в `SPEC.md`.
 
 ## Технологический стек
 
 - **Язык:** Rust (edition 2021) | **Async:** tokio 1
 - **Сеть:** iroh 0.97+ (QUIC/noq + NAT traversal + relay)
-- **Крипто (phase 1):** ml-kem 0.2, ml-dsa 0.0.4, x25519-dalek 2, chacha20poly1305, blake3, argon2
+- **Крипто (phase 1):** ml-kem 0.2, ml-dsa 0.1, x25519-dalek 2, chacha20poly1305, blake3, argon2
 - **Хранилище:** redb 2 (embedded, pure Rust)
 - **CLI:** ratatui 0.29 + crossterm 0.28
 - **Сериализация:** postcard 1 + serde
@@ -28,8 +28,9 @@ crates/
 ├── aira-storage/   # redb хранилище — все платформы
 ├── aira-daemon/    # фоновый процесс, IPC сокет
 ├── aira-cli/       # ratatui TUI
-├── aira-gui/       # egui/eframe desktop GUI (v0.2)
-└── aira-ffi/       # UniFFI биндинги для mobile (v0.3)
+├── aira-gui/       # egui/eframe desktop GUI (v0.3)
+├── aira-bot/       # Bot SDK для написания ботов (v0.2)
+└── aira-ffi/       # UniFFI биндинги для Android (v0.3, iOS исключён)
 ```
 
 ## Методология
