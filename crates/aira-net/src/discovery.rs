@@ -10,23 +10,26 @@ use serde::{Deserialize, Serialize};
 
 use crate::NetError;
 
-/// An invitation link containing a peer's identity public key and network address.
+/// An invitation link containing a per-contact pseudonym pubkey and network address.
+///
+/// Each invitation link contains a **unique pseudonym pubkey** (§12.6.5),
+/// not the identity key. Two invitation links from the same user are unlinkable.
 ///
 /// Format: `aira://add/<base64url(postcard(InvitationLink))>`
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InvitationLink {
-    /// ML-DSA-65 identity public key (1952 bytes).
-    pub identity_pk: Vec<u8>,
+    /// ML-DSA-65 pseudonym public key for this contact (§12.6.5, 1952 bytes).
+    pub pseudonym_pk: Vec<u8>,
     /// Serialized `EndpointAddr` for establishing connection.
     pub endpoint_addr_bytes: Vec<u8>,
 }
 
 impl InvitationLink {
-    /// Create a new invitation link.
+    /// Create a new invitation link with a pseudonym pubkey.
     #[must_use]
-    pub fn new(identity_pk: Vec<u8>, endpoint_addr_bytes: Vec<u8>) -> Self {
+    pub fn new(pseudonym_pk: Vec<u8>, endpoint_addr_bytes: Vec<u8>) -> Self {
         Self {
-            identity_pk,
+            pseudonym_pk,
             endpoint_addr_bytes,
         }
     }
@@ -218,7 +221,7 @@ mod tests {
         assert!(uri.starts_with("aira://add/"));
 
         let decoded = InvitationLink::from_uri(&uri).unwrap();
-        assert_eq!(decoded.identity_pk, vec![1, 2, 3, 4, 5]);
+        assert_eq!(decoded.pseudonym_pk, vec![1, 2, 3, 4, 5]);
         assert_eq!(decoded.endpoint_addr_bytes, vec![10, 20, 30]);
     }
 

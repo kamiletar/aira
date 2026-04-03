@@ -3,10 +3,19 @@
 //! Generates a 60-digit number (BLAKE3 of both public keys, sorted).
 //! Both peers compute the same number; compare verbally or via QR.
 //! See SPEC.md §6.9.
+//!
+//! **Important (§12.6.10):** keys should be **pseudonym pubkeys**, not identity keys.
+//! - For 1-on-1 contacts: `safety_number(my_pseudonym_for_bob, bob_pseudonym_for_me)`
+//! - For groups: `safety_number(my_group_pseudonym, alice_group_pseudonym)`
+//!
+//! This ensures that participants cannot be correlated across groups/contacts.
 
-/// Compute a Safety Number for a pair of ML-DSA identity keys.
+/// Compute a Safety Number for a pair of public keys.
 ///
 /// The result is a 60-digit decimal string grouped as 12 groups of 5.
+///
+/// **SPEC.md §12.6.10:** Pass **pseudonym pubkeys** (not identity keys) to ensure
+/// unlinkability across groups and contacts.
 ///
 /// # Example
 /// ```
