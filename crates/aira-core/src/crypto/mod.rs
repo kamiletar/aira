@@ -7,7 +7,6 @@
 pub mod rustcrypto;
 
 #[cfg(any(feature = "fips", feature = "compat-test"))]
-#[allow(unsafe_code)]
 pub mod awslc;
 
 #[cfg(feature = "compat-test")]
