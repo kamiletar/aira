@@ -89,8 +89,11 @@ async fn main() -> Result<()> {
             .await??
     };
 
-    // Derive storage key
+    // Derive storage key (before wrapping seed in Arc)
     let storage_key = master_seed.derive("aira/storage/0");
+
+    // Wrap seed in Arc for sharing with request handler (§12.6 pseudonym derivation)
+    let master_seed = Arc::new(master_seed);
 
     // Open database
     let dir = data_dir();
@@ -125,12 +128,14 @@ async fn main() -> Result<()> {
 
     // Build request handler (delegates to shared handler module)
     let handler_storage = storage.clone();
+    let handler_seed = master_seed.clone();
     let handler_blob_store = blob_store.clone();
     let handler_transfer_mgr = transfer_mgr.clone();
     let shutdown_signal = shutdown_tx.clone();
     let request_handler: ipc::RequestHandler = Arc::new(move |request| {
         handler::handle_request(
             &handler_storage,
+            &handler_seed,
             &handler_blob_store,
             &handler_transfer_mgr,
             &shutdown_signal,

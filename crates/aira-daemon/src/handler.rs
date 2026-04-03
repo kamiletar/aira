@@ -6,6 +6,8 @@
 
 #![allow(clippy::module_name_repetitions)]
 
+use aira_core::crypto::{ActiveProvider, CryptoProvider};
+use aira_core::seed::MasterSeed;
 use aira_core::util::{now_micros, now_secs, rand_id};
 
 use crate::types::{
@@ -20,9 +22,13 @@ const TRANSPORT_MODE_KEY: &str = "transport/mode";
 ///
 /// This is the core dispatch function: it pattern-matches on `DaemonRequest`
 /// and calls into `aira-storage` / `aira-net` accordingly.
+///
+/// The `seed` parameter enables pseudonym key derivation (§12.6) for group
+/// operations and contact exchange.
 #[allow(clippy::too_many_lines)]
 pub fn handle_request(
     storage: &aira_storage::Storage,
+    seed: &MasterSeed,
     blob_store: &aira_net::blobs::BlobStore,
     transfer_mgr: &crate::transfers::TransferManager,
     shutdown_tx: &mpsc::Sender<()>,
@@ -69,8 +75,23 @@ pub fn handle_request(
             }
         }
         DaemonRequest::GetMyAddress => {
-            // TODO(M5): return actual identity public key
-            DaemonResponse::MyAddress(vec![])
+            // Derive a new pseudonym for contact exchange (§12.6.5).
+            // Each call generates a fresh keypair — two invitation links are unlinkable.
+            let context_id = {
+                let mut id = [0u8; 32];
+                rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut id);
+                id
+            };
+            match derive_pseudonym_pubkey(
+                storage,
+                seed,
+                aira_storage::types::PseudonymContext::Contact,
+                context_id,
+                "",
+            ) {
+                Ok((_counter, pubkey)) => DaemonResponse::MyAddress(pubkey),
+                Err(e) => DaemonResponse::Error(format!("pseudonym derivation failed: {e}")),
+            }
         }
         DaemonRequest::SetTtl { contact, ttl_secs } => {
             match aira_storage::settings::set_ttl(storage, &contact, ttl_secs) {
@@ -105,7 +126,7 @@ pub fn handle_request(
 
         // ─── Group operations (SPEC.md §12) ─────────────────────────────
         DaemonRequest::CreateGroup { name, members } => {
-            handle_create_group(storage, &name, &members)
+            handle_create_group(storage, seed, &name, &members)
         }
         DaemonRequest::GetGroups => match aira_storage::groups::list_groups(storage) {
             Ok(groups) => {
@@ -241,9 +262,41 @@ fn pseudonym_to_resp(record: &aira_storage::PseudonymRecord) -> PseudonymResp {
     }
 }
 
+/// Derive a pseudonym ML-DSA public key for a given counter.
+///
+/// Allocates the next counter from storage, derives the keypair, stores
+/// the pseudonym record, and returns `(counter, pubkey_bytes)`.
+fn derive_pseudonym_pubkey(
+    storage: &aira_storage::Storage,
+    seed: &MasterSeed,
+    context_type: aira_storage::types::PseudonymContext,
+    context_id: [u8; 32],
+    display_name: &str,
+) -> Result<(u32, Vec<u8>), String> {
+    let counter = aira_storage::pseudonyms::next_counter(storage).map_err(|e| e.to_string())?;
+    let ps = seed.derive_pseudonym_seeds(counter);
+
+    let (_sk, vk) =
+        ActiveProvider::identity_keygen(&ps.signing).map_err(|e| format!("keygen: {e}"))?;
+    let pubkey = ActiveProvider::encode_verifying_key(&vk);
+
+    let record = aira_storage::PseudonymRecord {
+        counter,
+        pubkey: pubkey.clone(),
+        context_type,
+        context_id,
+        display_name: display_name.to_string(),
+        created_at: now_secs(),
+    };
+    aira_storage::pseudonyms::store(storage, &record).map_err(|e| e.to_string())?;
+
+    Ok((counter, pubkey))
+}
+
 /// Handle `CreateGroup` request.
 fn handle_create_group(
     storage: &aira_storage::Storage,
+    seed: &MasterSeed,
     name: &str,
     member_pubkeys: &[Vec<u8>],
 ) -> DaemonResponse {
@@ -259,10 +312,22 @@ fn handle_create_group(
 
     let now = now_secs();
 
-    // Creator is Admin — pseudonym pubkey derived at UI layer (§12.6)
+    // Derive our pseudonym for this group (§12.6)
+    let our_pubkey = match derive_pseudonym_pubkey(
+        storage,
+        seed,
+        aira_storage::types::PseudonymContext::Group,
+        group_id,
+        name,
+    ) {
+        Ok((_counter, pk)) => pk,
+        Err(e) => return DaemonResponse::Error(format!("pseudonym derivation failed: {e}")),
+    };
+
+    // Creator is Admin with derived pseudonym
     let mut members = vec![aira_storage::GroupMemberInfo {
-        pubkey: vec![], // TODO: fill with our pseudonym pubkey when identity is wired
-        display_name: String::new(), // TODO: UI will prompt for display name
+        pubkey: our_pubkey.clone(),
+        display_name: name.to_string(), // Default: group name as display name
         role: aira_storage::GroupRole::Admin,
         joined_at: now,
     }];
@@ -281,7 +346,7 @@ fn handle_create_group(
         id: group_id,
         name: name.to_string(),
         members,
-        created_by: vec![], // TODO: our pubkey
+        created_by: our_pubkey,
         created_at: now,
     };
 

@@ -27,6 +27,8 @@ pub struct AiraRuntime {
     tokio_rt: tokio::runtime::Runtime,
     /// Encrypted database.
     storage: Arc<aira_storage::Storage>,
+    /// Master seed for pseudonym derivation (§12.6).
+    seed: Arc<aira_core::seed::MasterSeed>,
     /// In-memory blob store for file transfers.
     blob_store: aira_net::blobs::BlobStore,
     /// Transfer progress tracker.
@@ -64,6 +66,7 @@ impl AiraRuntime {
             .map_err(|e| FfiError::Crypto { msg: e.to_string() })?;
 
         let storage_key = master_seed.derive("aira/storage/0");
+        let seed = Arc::new(master_seed);
 
         // Ensure data directory exists
         let dir = PathBuf::from(&data_dir);
@@ -116,6 +119,7 @@ impl AiraRuntime {
         Ok(Arc::new(Self {
             tokio_rt,
             storage,
+            seed,
             blob_store,
             transfer_mgr,
             event_tx,
@@ -365,6 +369,7 @@ impl AiraRuntime {
     fn dispatch(&self, request: DaemonRequest) -> DaemonResponse {
         handler::handle_request(
             &self.storage,
+            &self.seed,
             &self.blob_store,
             &self.transfer_mgr,
             &self.shutdown_tx,
