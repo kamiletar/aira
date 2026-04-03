@@ -181,7 +181,7 @@ pub fn handle_request(
 
 /// Convert storage `GroupInfo` to daemon response `GroupInfoResp`.
 #[must_use]
-pub fn group_info_to_resp(group: &aira_storage::GroupInfo) -> GroupInfoResp {
+pub(crate) fn group_info_to_resp(group: &aira_storage::GroupInfo) -> GroupInfoResp {
     GroupInfoResp {
         id: group.id,
         name: group.name.clone(),
