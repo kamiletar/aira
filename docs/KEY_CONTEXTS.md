@@ -9,7 +9,31 @@
 
 | Контекст | Назначение | Крейт |
 |----------|-----------|-------|
+| `aira/identity/0` | ML-DSA-65 identity signing key | aira-core/identity |
+| `aira/x25519/0` | X25519 static DH key | aira-core/handshake |
+| `aira/mlkem/0` | ML-KEM-768 KEM key (input to kem_keygen) | aira-core/handshake |
 | `aira/storage/0` | Storage encryption key | aira-storage |
+
+## ML-KEM Internal (seed splitting)
+
+| Контекст | Назначение | Крейт |
+|----------|-----------|-------|
+| `aira/kem-keygen-d` | ML-KEM-768 deterministic keygen: seed d | aira-core/crypto |
+| `aira/kem-keygen-z` | ML-KEM-768 deterministic keygen: seed z | aira-core/crypto |
+
+## Hybrid KEM
+
+| Контекст | Назначение | Крейт |
+|----------|-----------|-------|
+| `aira/hybrid-kem/v1` | X25519+ML-KEM IETF-style combiner | aira-core/kem |
+
+## Handshake Session Keys
+
+| Контекст | Назначение | Крейт |
+|----------|-----------|-------|
+| `aira/session/root/v1` | Session root key from combined secrets | aira-core/handshake |
+| `aira/session/init-to-resp/v1` | Directional chain key: initiator→responder | aira-core/handshake |
+| `aira/session/resp-to-init/v1` | Directional chain key: responder→initiator | aira-core/handshake |
 
 ## Double Ratchet (1-on-1)
 
@@ -19,6 +43,14 @@
 | `aira/chain/message-key` | Per-message encryption key | aira-core/ratchet |
 | `aira/ratchet/root` | Root key after DH ratchet step | aira-core/ratchet |
 | `aira/ratchet/chain` | Chain key after DH ratchet step | aira-core/ratchet |
+
+## PQ Ratchet (SPQR)
+
+| Контекст | Назначение | Крейт |
+|----------|-----------|-------|
+| `aira/ratchet/pq-mix` | Mix PQ shared secret into root key | aira-core/ratchet |
+| `aira/ratchet/pq-init` | Initial PQ keypair seed from root key | aira-core/ratchet |
+| `aira/ratchet/pq-rekey` | PQ rekey seed after ratchet step | aira-core/ratchet |
 
 ## Device Management (Multidevice)
 
@@ -34,6 +66,12 @@
 |----------|-----------|-------|
 | `aira/group/chain-advance` | Group sender key chain advancement | aira-core/group |
 | `aira/group/message-key` | Per-message group encryption key | aira-core/group |
+
+## Relay
+
+| Контекст | Назначение | Крейт |
+|----------|-----------|-------|
+| `aira/relay/mailbox/v1` | Pairwise mailbox ID derivation | aira-net/relay |
 
 ## Transport Layer (DPI Resistance)
 
