@@ -6,20 +6,17 @@
 //! The verifying (public) key is the user's address — shared openly.
 //! See SPEC.md §4.1.
 
-use ml_dsa::MlDsa65;
-
-use crate::crypto::rustcrypto::RustCryptoProvider;
-use crate::crypto::CryptoProvider;
+use crate::crypto::{ActiveProvider, CryptoProvider};
 use crate::proto::AiraError;
 use crate::seed::MasterSeed;
 
 /// The user's identity keypair (ML-DSA-65).
 ///
 /// Derived deterministically from the master seed.
-/// The signing key is zeroized on drop (via ml-dsa's `ZeroizeOnDrop`).
+/// The signing key is zeroized on drop (via `ZeroizeOnDrop`).
 pub struct Identity {
-    signing_key: <RustCryptoProvider as CryptoProvider>::SigningKey,
-    verifying_key: <RustCryptoProvider as CryptoProvider>::VerifyingKey,
+    signing_key: <ActiveProvider as CryptoProvider>::SigningKey,
+    verifying_key: <ActiveProvider as CryptoProvider>::VerifyingKey,
 }
 
 impl Identity {
@@ -30,7 +27,7 @@ impl Identity {
     #[must_use]
     pub fn from_seed(seed: &MasterSeed) -> Self {
         let derived = seed.derive("aira/identity/0");
-        let (signing_key, verifying_key) = RustCryptoProvider::identity_keygen(&derived);
+        let (signing_key, verifying_key) = ActiveProvider::identity_keygen(&derived);
         Self {
             signing_key,
             verifying_key,
@@ -51,23 +48,23 @@ impl Identity {
     /// Sign a message with the identity's ML-DSA-65 signing key.
     #[must_use]
     pub fn sign(&self, msg: &[u8]) -> Vec<u8> {
-        RustCryptoProvider::sign(&self.signing_key, msg)
+        ActiveProvider::sign(&self.signing_key, msg)
     }
 
     /// Verify a signature against the identity's public key.
     #[must_use]
     pub fn verify(&self, msg: &[u8], sig: &[u8]) -> bool {
-        RustCryptoProvider::verify(&self.verifying_key, msg, sig)
+        ActiveProvider::verify(&self.verifying_key, msg, sig)
     }
 
     /// Verify a signature against an arbitrary verifying key.
     #[must_use]
     pub fn verify_with_key(
-        key: &<RustCryptoProvider as CryptoProvider>::VerifyingKey,
+        key: &<ActiveProvider as CryptoProvider>::VerifyingKey,
         msg: &[u8],
         sig: &[u8],
     ) -> bool {
-        RustCryptoProvider::verify(key, msg, sig)
+        ActiveProvider::verify(key, msg, sig)
     }
 
     /// Get the encoded public (verifying) key bytes.
@@ -75,9 +72,7 @@ impl Identity {
     /// This is the user's address (1,952 bytes for ML-DSA-65).
     #[must_use]
     pub fn public_key_bytes(&self) -> Vec<u8> {
-        use ml_dsa::EncodedVerifyingKey;
-        let encoded: EncodedVerifyingKey<MlDsa65> = self.verifying_key.encode();
-        encoded.to_vec()
+        ActiveProvider::encode_verifying_key(&self.verifying_key)
     }
 
     /// Get a short fingerprint for oral verification.
@@ -97,7 +92,7 @@ impl Identity {
 
     /// Get a reference to the verifying key.
     #[must_use]
-    pub fn verifying_key(&self) -> &<RustCryptoProvider as CryptoProvider>::VerifyingKey {
+    pub fn verifying_key(&self) -> &<ActiveProvider as CryptoProvider>::VerifyingKey {
         &self.verifying_key
     }
 }
@@ -122,10 +117,17 @@ mod tests {
         let id1 = Identity::from_seed(&seed);
         let id2 = Identity::from_seed(&seed);
 
+        // Same seed → same keys (public keys must match)
+        assert_eq!(
+            id1.public_key_bytes(),
+            id2.public_key_bytes(),
+            "same seed must produce identical public keys"
+        );
+
+        // Cross-verification: sig from one key verifies with the other
         let msg = b"determinism check";
         let sig1 = id1.sign(msg);
         let sig2 = id2.sign(msg);
-        assert_eq!(sig1, sig2, "same seed must produce identical signatures");
         assert!(id1.verify(msg, &sig2));
         assert!(id2.verify(msg, &sig1));
     }

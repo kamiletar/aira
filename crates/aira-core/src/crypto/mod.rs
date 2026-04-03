@@ -5,11 +5,28 @@
 //! See `docs/KEY_CONTEXTS.md` for the canonical list of KDF contexts.
 
 pub mod rustcrypto;
-// pub mod awslc;  // Phase 2: uncomment when migrating to FIPS
+
+#[cfg(any(feature = "fips", feature = "compat-test"))]
+#[allow(unsafe_code)]
+pub mod awslc;
+
+#[cfg(feature = "compat-test")]
+mod compat_tests;
+
+/// Active crypto backend, selected at compile time.
+///
+/// Default: [`rustcrypto::RustCryptoProvider`] (pure Rust).
+/// With `--features=fips`: [`awslc::AwsLcProvider`] (FIPS 140-3).
+#[cfg(not(feature = "fips"))]
+pub type ActiveProvider = rustcrypto::RustCryptoProvider;
+
+/// Active crypto backend (FIPS mode).
+#[cfg(feature = "fips")]
+pub type ActiveProvider = awslc::AwsLcProvider;
 
 /// Abstraction over PQ cryptographic backends.
 ///
-/// Implementations: [`rustcrypto`] (Phase 1), `awslc` (Phase 2).
+/// Implementations: [`rustcrypto`] (Phase 1), [`awslc`] (Phase 2, FIPS).
 pub trait CryptoProvider {
     type SigningKey: zeroize::ZeroizeOnDrop;
     type VerifyingKey: Clone;
@@ -40,6 +57,38 @@ pub trait CryptoProvider {
         sk: &Self::KemDecapsKey,
         ct: &[u8],
     ) -> Result<zeroize::Zeroizing<[u8; 32]>, CryptoError>;
+
+    // ─── Serialization ──────────────────────────────────────────────────
+
+    /// Encode a verifying (public) key to bytes.
+    fn encode_verifying_key(key: &Self::VerifyingKey) -> Vec<u8>;
+
+    /// Decode a verifying key from bytes.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CryptoError::InvalidKey`] if the bytes are malformed.
+    fn decode_verifying_key(bytes: &[u8]) -> Result<Self::VerifyingKey, CryptoError>;
+
+    /// Encode a KEM encapsulation (public) key to bytes.
+    fn encode_kem_encaps_key(key: &Self::KemEncapsKey) -> Vec<u8>;
+
+    /// Decode a KEM encapsulation key from bytes.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CryptoError::InvalidKey`] if the bytes are malformed.
+    fn decode_kem_encaps_key(bytes: &[u8]) -> Result<Self::KemEncapsKey, CryptoError>;
+
+    /// Encode a KEM decapsulation (secret) key to bytes.
+    fn encode_kem_decaps_key(key: &Self::KemDecapsKey) -> Vec<u8>;
+
+    /// Decode a KEM decapsulation key from bytes.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CryptoError::InvalidKey`] if the bytes are malformed.
+    fn decode_kem_decaps_key(bytes: &[u8]) -> Result<Self::KemDecapsKey, CryptoError>;
 }
 
 #[derive(Debug, thiserror::Error)]

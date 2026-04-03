@@ -67,6 +67,45 @@ impl CryptoProvider for RustCryptoProvider {
             .map_err(|()| CryptoError::DecapsFailed)?;
         Ok(Zeroizing::new(shared_key.into()))
     }
+
+    // ─── Serialization ──────────────────────────────────────────────────
+
+    fn encode_verifying_key(key: &Self::VerifyingKey) -> Vec<u8> {
+        use ml_dsa::EncodedVerifyingKey;
+        let encoded: EncodedVerifyingKey<MlDsa65> = key.encode();
+        encoded.to_vec()
+    }
+
+    fn decode_verifying_key(bytes: &[u8]) -> Result<Self::VerifyingKey, CryptoError> {
+        use ml_dsa::{EncodedVerifyingKey, VerifyingKey};
+        let encoded =
+            EncodedVerifyingKey::<MlDsa65>::try_from(bytes).map_err(|_| CryptoError::InvalidKey)?;
+        Ok(VerifyingKey::decode(&encoded))
+    }
+
+    fn encode_kem_encaps_key(key: &Self::KemEncapsKey) -> Vec<u8> {
+        use ml_kem::EncodedSizeUser;
+        key.as_bytes().to_vec()
+    }
+
+    fn decode_kem_encaps_key(bytes: &[u8]) -> Result<Self::KemEncapsKey, CryptoError> {
+        use ml_kem::EncodedSizeUser;
+        let encoded = ml_kem::Encoded::<Self::KemEncapsKey>::try_from(bytes)
+            .map_err(|_| CryptoError::InvalidKey)?;
+        Ok(Self::KemEncapsKey::from_bytes(&encoded))
+    }
+
+    fn encode_kem_decaps_key(key: &Self::KemDecapsKey) -> Vec<u8> {
+        use ml_kem::EncodedSizeUser;
+        key.as_bytes().to_vec()
+    }
+
+    fn decode_kem_decaps_key(bytes: &[u8]) -> Result<Self::KemDecapsKey, CryptoError> {
+        use ml_kem::EncodedSizeUser;
+        let encoded = ml_kem::Encoded::<Self::KemDecapsKey>::try_from(bytes)
+            .map_err(|_| CryptoError::InvalidKey)?;
+        Ok(Self::KemDecapsKey::from_bytes(&encoded))
+    }
 }
 
 #[cfg(test)]

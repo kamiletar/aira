@@ -17,8 +17,7 @@
 use x25519_dalek::{EphemeralSecret, PublicKey as X25519PublicKey, StaticSecret};
 use zeroize::Zeroizing;
 
-use crate::crypto::rustcrypto::RustCryptoProvider;
-use crate::crypto::{CryptoError, CryptoProvider};
+use crate::crypto::{ActiveProvider, CryptoError, CryptoProvider};
 
 /// KDF context for the hybrid combiner (see `docs/KEY_CONTEXTS.md`).
 const HYBRID_KEM_CONTEXT: &str = "aira/hybrid-kem/v1";
@@ -44,7 +43,7 @@ pub struct HybridKemOutput {
 #[must_use]
 pub fn hybrid_encaps(
     peer_x25519_pk: &X25519PublicKey,
-    peer_mlkem_ek: &<RustCryptoProvider as CryptoProvider>::KemEncapsKey,
+    peer_mlkem_ek: &<ActiveProvider as CryptoProvider>::KemEncapsKey,
 ) -> HybridKemOutput {
     // X25519 ephemeral DH
     let eph_secret = EphemeralSecret::random_from_rng(rand::thread_rng());
@@ -52,7 +51,7 @@ pub fn hybrid_encaps(
     let x25519_ss = eph_secret.diffie_hellman(peer_x25519_pk);
 
     // ML-KEM-768 encapsulation
-    let (mlkem_ct, mlkem_ss) = RustCryptoProvider::kem_encaps(peer_mlkem_ek);
+    let (mlkem_ct, mlkem_ss) = ActiveProvider::kem_encaps(peer_mlkem_ek);
 
     // Combine via BLAKE3-KDF
     let shared_secret = combine_secrets(
@@ -83,7 +82,7 @@ pub fn hybrid_encaps(
 /// Returns [`CryptoError::DecapsFailed`] if ML-KEM decapsulation fails.
 pub fn hybrid_decaps(
     x25519_sk: &StaticSecret,
-    mlkem_dk: &<RustCryptoProvider as CryptoProvider>::KemDecapsKey,
+    mlkem_dk: &<ActiveProvider as CryptoProvider>::KemDecapsKey,
     x25519_ct: &[u8; 32],
     mlkem_ct: &[u8],
 ) -> Result<Zeroizing<[u8; 32]>, CryptoError> {
@@ -92,7 +91,7 @@ pub fn hybrid_decaps(
     let x25519_ss = x25519_sk.diffie_hellman(&peer_pk);
 
     // ML-KEM-768 decapsulation
-    let mlkem_ss = RustCryptoProvider::kem_decaps(mlkem_dk, mlkem_ct)?;
+    let mlkem_ss = ActiveProvider::kem_decaps(mlkem_dk, mlkem_ct)?;
 
     // Combine via BLAKE3-KDF
     let shared_secret = combine_secrets(x25519_ss.as_bytes(), &mlkem_ss, x25519_ct, mlkem_ct);
@@ -152,8 +151,8 @@ mod tests {
     fn test_keypair() -> (
         StaticSecret,
         X25519PublicKey,
-        <RustCryptoProvider as CryptoProvider>::KemDecapsKey,
-        <RustCryptoProvider as CryptoProvider>::KemEncapsKey,
+        <ActiveProvider as CryptoProvider>::KemDecapsKey,
+        <ActiveProvider as CryptoProvider>::KemEncapsKey,
     ) {
         let phrase = test_helpers::encode_entropy(&[77u8; 32]);
         let seed =
@@ -163,7 +162,7 @@ mod tests {
 
         let x_sk = x25519_secret_from_seed(&x_seed);
         let x_pk = x25519_public_key(&x_sk);
-        let (m_dk, m_ek) = RustCryptoProvider::kem_keygen(&m_seed);
+        let (m_dk, m_ek) = ActiveProvider::kem_keygen(&m_seed);
 
         (x_sk, x_pk, m_dk, m_ek)
     }
@@ -191,7 +190,7 @@ mod tests {
         let x_seed2 = seed2.derive("aira/x25519/0");
         let m_seed2 = seed2.derive("aira/mlkem/0");
         let x_pk2 = x25519_public_key(&x25519_secret_from_seed(&x_seed2));
-        let (_, m_ek2) = RustCryptoProvider::kem_keygen(&m_seed2);
+        let (_, m_ek2) = ActiveProvider::kem_keygen(&m_seed2);
 
         let out1 = hybrid_encaps(&x_pk1, &m_ek1);
         let out2 = hybrid_encaps(&x_pk2, &m_ek2);

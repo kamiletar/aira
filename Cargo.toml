@@ -12,7 +12,7 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "0.3.2"
+version = "0.3.3"
 edition = "2021"
 authors = ["Aira contributors"]
 license = "MIT OR Apache-2.0"
@@ -28,9 +28,11 @@ iroh = "0.97"
 iroh-blobs = "0.99"
 
 # Post-quantum crypto (Phase 1: RustCrypto — чистый Rust)
-# Phase 2 (production): aws-lc-rs = "1.16" (FIPS 140-3)
 ml-kem = { version = "0.2", features = ["deterministic", "zeroize"] }
 ml-dsa = { version = "0.0", features = ["zeroize"] }
+
+# Phase 2 (production): FIPS 140-3 validated ML-KEM + ML-DSA
+aws-lc-rs = { version = "1.16", features = ["unstable"] }
 
 # Классический компонент гибридного KEM
 x25519-dalek = { version = "2", features = ["static_secrets", "reusable_secrets"] }

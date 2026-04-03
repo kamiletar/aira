@@ -15,8 +15,7 @@
 use x25519_dalek::{EphemeralSecret, PublicKey as X25519PublicKey, StaticSecret};
 use zeroize::Zeroizing;
 
-use crate::crypto::rustcrypto::RustCryptoProvider;
-use crate::crypto::CryptoProvider;
+use crate::crypto::{ActiveProvider, CryptoProvider};
 use crate::identity::Identity;
 use crate::kem;
 use crate::proto::{AiraError, Capabilities, HandshakeAck, HandshakeInit};
@@ -60,9 +59,9 @@ pub struct Initiator {
     /// Our static X25519 secret (for future key agreement)
     _x25519_sk: StaticSecret,
     /// Our ML-KEM decaps key
-    mlkem_dk: <RustCryptoProvider as CryptoProvider>::KemDecapsKey,
+    mlkem_dk: <ActiveProvider as CryptoProvider>::KemDecapsKey,
     /// Our ML-KEM encaps key (sent to responder)
-    mlkem_ek: <RustCryptoProvider as CryptoProvider>::KemEncapsKey,
+    mlkem_ek: <ActiveProvider as CryptoProvider>::KemEncapsKey,
     /// Our capabilities
     caps: Capabilities,
 }
@@ -76,7 +75,7 @@ impl Initiator {
         let kem_seed = seed.derive("aira/mlkem/0");
 
         let x25519_sk = kem::x25519_secret_from_seed(&dh_seed);
-        let (mlkem_dk, mlkem_ek) = RustCryptoProvider::kem_keygen(&kem_seed);
+        let (mlkem_dk, mlkem_ek) = ActiveProvider::kem_keygen(&kem_seed);
 
         let eph_secret = EphemeralSecret::random_from_rng(rand::thread_rng());
         let eph_public = X25519PublicKey::from(&eph_secret);
@@ -149,7 +148,7 @@ impl Initiator {
         let x25519_ss = eph_secret.diffie_hellman(&resp_x25519_pk);
 
         // ML-KEM decapsulation
-        let mlkem_ss = RustCryptoProvider::kem_decaps(&self.mlkem_dk, &ack.kem_ciphertext)
+        let mlkem_ss = ActiveProvider::kem_decaps(&self.mlkem_dk, &ack.kem_ciphertext)
             .map_err(|_| AiraError::Handshake("ML-KEM decaps failed".into()))?;
 
         // Combine secrets and derive session keys
@@ -168,8 +167,8 @@ impl Initiator {
 pub struct Responder {
     identity: Identity,
     _x25519_sk: StaticSecret,
-    _mlkem_dk: <RustCryptoProvider as CryptoProvider>::KemDecapsKey,
-    _mlkem_ek: <RustCryptoProvider as CryptoProvider>::KemEncapsKey,
+    _mlkem_dk: <ActiveProvider as CryptoProvider>::KemDecapsKey,
+    _mlkem_ek: <ActiveProvider as CryptoProvider>::KemEncapsKey,
     caps: Capabilities,
 }
 
@@ -182,7 +181,7 @@ impl Responder {
         let kem_seed = seed.derive("aira/mlkem/0");
 
         let x25519_sk = kem::x25519_secret_from_seed(&dh_seed);
-        let (mlkem_dk, mlkem_ek) = RustCryptoProvider::kem_keygen(&kem_seed);
+        let (mlkem_dk, mlkem_ek) = ActiveProvider::kem_keygen(&kem_seed);
 
         let caps = default_capabilities();
 
@@ -215,7 +214,7 @@ impl Responder {
         let init_mlkem_ek = decode_mlkem_ek(&init.kem_encaps_pk)?;
 
         // ML-KEM encapsulation toward initiator
-        let (mlkem_ct, mlkem_ss) = RustCryptoProvider::kem_encaps(&init_mlkem_ek);
+        let (mlkem_ct, mlkem_ss) = ActiveProvider::kem_encaps(&init_mlkem_ek);
 
         // X25519: generate ephemeral, DH with initiator's ephemeral
         let eph_secret = EphemeralSecret::random_from_rng(rand::thread_rng());
@@ -324,28 +323,22 @@ fn build_ack_signed_data(ack: &HandshakeAck) -> Vec<u8> {
     data
 }
 
-fn encode_mlkem_ek(ek: &<RustCryptoProvider as CryptoProvider>::KemEncapsKey) -> Vec<u8> {
-    use ml_kem::EncodedSizeUser;
-    ek.as_bytes().to_vec()
+fn encode_mlkem_ek(ek: &<ActiveProvider as CryptoProvider>::KemEncapsKey) -> Vec<u8> {
+    ActiveProvider::encode_kem_encaps_key(ek)
 }
 
 fn decode_mlkem_ek(
     bytes: &[u8],
-) -> Result<<RustCryptoProvider as CryptoProvider>::KemEncapsKey, AiraError> {
-    use ml_kem::EncodedSizeUser;
-    let encoded =
-        ml_kem::Encoded::<<RustCryptoProvider as CryptoProvider>::KemEncapsKey>::try_from(bytes)
-            .map_err(|_| AiraError::Handshake("invalid ML-KEM encapsulation key".into()))?;
-    Ok(<RustCryptoProvider as CryptoProvider>::KemEncapsKey::from_bytes(&encoded))
+) -> Result<<ActiveProvider as CryptoProvider>::KemEncapsKey, AiraError> {
+    ActiveProvider::decode_kem_encaps_key(bytes)
+        .map_err(|_| AiraError::Handshake("invalid ML-KEM encapsulation key".into()))
 }
 
 fn decode_identity_vk(
     bytes: &[u8],
-) -> Result<<RustCryptoProvider as CryptoProvider>::VerifyingKey, AiraError> {
-    use ml_dsa::{EncodedVerifyingKey, MlDsa65, VerifyingKey};
-    let encoded = EncodedVerifyingKey::<MlDsa65>::try_from(bytes)
-        .map_err(|_| AiraError::Handshake("invalid ML-DSA verifying key".into()))?;
-    Ok(VerifyingKey::decode(&encoded))
+) -> Result<<ActiveProvider as CryptoProvider>::VerifyingKey, AiraError> {
+    ActiveProvider::decode_verifying_key(bytes)
+        .map_err(|_| AiraError::Handshake("invalid ML-DSA verifying key".into()))
 }
 
 #[cfg(test)]

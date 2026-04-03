@@ -37,6 +37,9 @@ sha2.workspace = true
 # Constant-time comparisons
 subtle.workspace = true
 
+# FIPS 140-3 crypto backend (Phase 2, optional)
+aws-lc-rs = { workspace = true, optional = true }
+
 # Утилиты
 thiserror.workspace = true
 anyhow.workspace = true
@@ -47,4 +50,5 @@ proptest = "1"
 
 [features]
 default = []
-# fips = []   # Phase 2: aws-lc-rs backend
+fips = ["dep:aws-lc-rs"]
+compat-test = ["dep:aws-lc-rs"]

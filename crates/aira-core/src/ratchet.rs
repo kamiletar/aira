@@ -10,8 +10,7 @@
 
 use std::collections::HashMap;
 
-use crate::crypto::rustcrypto::RustCryptoProvider;
-use crate::crypto::CryptoProvider;
+use crate::crypto::{ActiveProvider, CryptoProvider};
 use crate::proto::{AiraError, EncryptedEnvelope};
 use chacha20poly1305::{
     aead::{Aead, KeyInit},
@@ -167,9 +166,9 @@ pub struct RatchetSession {
     // PQ ratchet state
     pq_enabled: bool,
     send_since_pq: u64,
-    pq_mlkem_dk: Option<<RustCryptoProvider as CryptoProvider>::KemDecapsKey>,
-    pq_mlkem_ek: Option<<RustCryptoProvider as CryptoProvider>::KemEncapsKey>,
-    peer_pq_ek: Option<<RustCryptoProvider as CryptoProvider>::KemEncapsKey>,
+    pq_mlkem_dk: Option<<ActiveProvider as CryptoProvider>::KemDecapsKey>,
+    pq_mlkem_ek: Option<<ActiveProvider as CryptoProvider>::KemEncapsKey>,
+    peer_pq_ek: Option<<ActiveProvider as CryptoProvider>::KemEncapsKey>,
 
     // Skipped message keys
     skipped: SkippedKeys,
@@ -192,7 +191,7 @@ impl RatchetSession {
 
         let (pq_dk, pq_ek) = if pq_enabled {
             let seed: [u8; 32] = blake3::derive_key("aira/ratchet/pq-init", &root_key);
-            let (dk, ek) = RustCryptoProvider::kem_keygen(&seed);
+            let (dk, ek) = ActiveProvider::kem_keygen(&seed);
             (Some(dk), Some(ek))
         } else {
             (None, None)
@@ -345,7 +344,7 @@ impl RatchetSession {
             .ok_or(AiraError::Handshake("no peer PQ EK".into()))?;
 
         // Encapsulate toward peer
-        let (ct, ss) = RustCryptoProvider::kem_encaps(peer_ek);
+        let (ct, ss) = ActiveProvider::kem_encaps(peer_ek);
 
         // Mix PQ secret into root key
         self.root_key = pq_mix(&self.root_key, &ss);
@@ -353,11 +352,8 @@ impl RatchetSession {
 
         // Generate new PQ keypair for peer to use
         let seed: [u8; 32] = blake3::derive_key("aira/ratchet/pq-rekey", &self.root_key);
-        let (dk, ek) = RustCryptoProvider::kem_keygen(&seed);
-        let ek_bytes = {
-            use ml_kem::EncodedSizeUser;
-            ek.as_bytes().to_vec()
-        };
+        let (dk, ek) = ActiveProvider::kem_keygen(&seed);
+        let ek_bytes = ActiveProvider::encode_kem_encaps_key(&ek);
         self.pq_mlkem_dk = Some(dk);
         self.pq_mlkem_ek = Some(ek);
 
@@ -366,19 +362,14 @@ impl RatchetSession {
 
     fn pq_ratchet_recv(&mut self, ct: &[u8]) -> Result<(), AiraError> {
         let dk = self.pq_mlkem_dk.as_ref().ok_or(AiraError::Decryption)?;
-        let ss = RustCryptoProvider::kem_decaps(dk, ct).map_err(|_| AiraError::Decryption)?;
+        let ss = ActiveProvider::kem_decaps(dk, ct).map_err(|_| AiraError::Decryption)?;
         self.root_key = pq_mix(&self.root_key, &ss);
         Ok(())
     }
 
     fn store_peer_pq_ek(&mut self, ek_bytes: &[u8]) -> Result<(), AiraError> {
-        use ml_kem::EncodedSizeUser;
-        let encoded =
-            ml_kem::Encoded::<<RustCryptoProvider as CryptoProvider>::KemEncapsKey>::try_from(
-                ek_bytes,
-            )
-            .map_err(|_| AiraError::Decryption)?;
-        let ek = <RustCryptoProvider as CryptoProvider>::KemEncapsKey::from_bytes(&encoded);
+        let ek =
+            ActiveProvider::decode_kem_encaps_key(ek_bytes).map_err(|_| AiraError::Decryption)?;
         self.peer_pq_ek = Some(ek);
         Ok(())
     }
@@ -413,18 +404,18 @@ impl RatchetSession {
     /// later restored with [`from_snapshot`].
     #[must_use]
     pub fn to_snapshot(&self) -> RatchetSnapshot {
-        let pq_dk_bytes = self.pq_mlkem_dk.as_ref().map(|dk| {
-            use ml_kem::EncodedSizeUser;
-            dk.as_bytes().to_vec()
-        });
-        let pq_ek_bytes = self.pq_mlkem_ek.as_ref().map(|ek| {
-            use ml_kem::EncodedSizeUser;
-            ek.as_bytes().to_vec()
-        });
-        let peer_pq_ek_bytes = self.peer_pq_ek.as_ref().map(|ek| {
-            use ml_kem::EncodedSizeUser;
-            ek.as_bytes().to_vec()
-        });
+        let pq_dk_bytes = self
+            .pq_mlkem_dk
+            .as_ref()
+            .map(ActiveProvider::encode_kem_decaps_key);
+        let pq_ek_bytes = self
+            .pq_mlkem_ek
+            .as_ref()
+            .map(ActiveProvider::encode_kem_encaps_key);
+        let peer_pq_ek_bytes = self
+            .peer_pq_ek
+            .as_ref()
+            .map(ActiveProvider::encode_kem_encaps_key);
 
         let skipped_entries: Vec<([u8; 32], u64, [u8; 32])> = self
             .skipped
@@ -464,12 +455,7 @@ impl RatchetSession {
             .pq_dk_bytes
             .as_deref()
             .map(|bytes| {
-                use ml_kem::EncodedSizeUser;
-                let encoded = ml_kem::Encoded::<
-                    <RustCryptoProvider as CryptoProvider>::KemDecapsKey,
-                >::try_from(bytes)
-                .map_err(|_| AiraError::Decryption)?;
-                Ok(<RustCryptoProvider as CryptoProvider>::KemDecapsKey::from_bytes(&encoded))
+                ActiveProvider::decode_kem_decaps_key(bytes).map_err(|_| AiraError::Decryption)
             })
             .transpose()?;
 
@@ -477,12 +463,7 @@ impl RatchetSession {
             .pq_ek_bytes
             .as_deref()
             .map(|bytes| {
-                use ml_kem::EncodedSizeUser;
-                let encoded = ml_kem::Encoded::<
-                    <RustCryptoProvider as CryptoProvider>::KemEncapsKey,
-                >::try_from(bytes)
-                .map_err(|_| AiraError::Decryption)?;
-                Ok(<RustCryptoProvider as CryptoProvider>::KemEncapsKey::from_bytes(&encoded))
+                ActiveProvider::decode_kem_encaps_key(bytes).map_err(|_| AiraError::Decryption)
             })
             .transpose()?;
 
@@ -490,12 +471,7 @@ impl RatchetSession {
             .peer_pq_ek_bytes
             .as_deref()
             .map(|bytes| {
-                use ml_kem::EncodedSizeUser;
-                let encoded = ml_kem::Encoded::<
-                    <RustCryptoProvider as CryptoProvider>::KemEncapsKey,
-                >::try_from(bytes)
-                .map_err(|_| AiraError::Decryption)?;
-                Ok(<RustCryptoProvider as CryptoProvider>::KemEncapsKey::from_bytes(&encoded))
+                ActiveProvider::decode_kem_encaps_key(bytes).map_err(|_| AiraError::Decryption)
             })
             .transpose()?;
 
