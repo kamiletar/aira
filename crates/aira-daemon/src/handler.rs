@@ -357,21 +357,27 @@ fn handle_create_group(
         Err(e) => return DaemonResponse::Error(format!("pseudonym derivation failed: {e}")),
     };
 
-    // Creator is Admin with derived pseudonym
+    // Generate creator's initial Sender Key (§12.1)
+    let creator_sk = aira_core::group::SenderKeyState::new();
+
+    // Creator is Admin with derived pseudonym + sender key
     let mut members = vec![aira_storage::GroupMemberInfo {
         pubkey: our_pubkey.clone(),
-        display_name: name.to_string(), // Default: group name as display name
+        display_name: name.to_string(),
         role: aira_storage::GroupRole::Admin,
         joined_at: now,
+        sender_chain_key: *creator_sk.chain_key_bytes(),
     }];
 
     // Other members start as Member — pseudonym pubkeys provided by invitees (§12.6)
+    // Chain key zero-filled until they send SenderKeyUpdate after accepting invite
     for pk in member_pubkeys {
         members.push(aira_storage::GroupMemberInfo {
             pubkey: pk.clone(),
-            display_name: String::new(), // Filled when member responds with pseudonym
+            display_name: String::new(),
             role: aira_storage::GroupRole::Member,
             joined_at: now,
+            sender_chain_key: [0; 32],
         });
     }
 
@@ -397,7 +403,7 @@ fn handle_create_group(
                 group_id,
                 name: name.to_string(),
                 members: group.members.iter().map(|m| m.pubkey.clone()).collect(),
-                creator_sender_key: vec![], // TODO: generate SenderKey when Sender Key layer is wired
+                creator_sender_key: creator_sk.chain_key_bytes().to_vec(),
             };
             enqueue_group_control(storage, &control, &all_member_pubkeys);
 
@@ -470,15 +476,23 @@ fn handle_group_add_member(
         display_name: String::new(), // Filled when member responds with pseudonym (§12.6)
         role: aira_storage::GroupRole::Member,
         joined_at: now,
+        sender_chain_key: [0; 32], // Zero until member sends SenderKeyUpdate
     };
 
     match aira_storage::groups::add_member(storage, group_id, member) {
         Ok(()) => {
-            // Notify all existing members about the new member
+            // Collect existing members' chain keys for the new member
+            let sender_keys: Vec<(Vec<u8>, Vec<u8>)> = group
+                .members
+                .iter()
+                .filter(|m| m.sender_chain_key != [0; 32])
+                .map(|m| (m.pubkey.clone(), m.sender_chain_key.to_vec()))
+                .collect();
+
             let control = aira_core::group_proto::GroupControl::AddMember {
                 group_id: *group_id,
                 new_member: member_pubkey.to_vec(),
-                sender_keys: vec![], // TODO: distribute actual SenderKeys when Sender Key layer is wired
+                sender_keys,
             };
             let recipients: Vec<Vec<u8>> = group.members.iter().map(|m| m.pubkey.clone()).collect();
             enqueue_group_control(storage, &control, &recipients);
@@ -557,11 +571,13 @@ fn handle_accept_group_invite(
         Err(e) => return DaemonResponse::Error(format!("pseudonym derivation failed: {e}")),
     };
 
-    // Send our pseudonym pubkey to the admin via SenderKeyUpdate
-    // (admin will use it to update the group member list)
+    // Generate our initial Sender Key for this group (§12.1)
+    let our_sk = aira_core::group::SenderKeyState::new();
+
+    // Send our chain key to the admin (who will distribute to other members)
     let control = aira_core::group_proto::GroupControl::SenderKeyUpdate {
         group_id: *group_id,
-        new_key: our_pubkey.clone(),
+        new_key: our_sk.chain_key_bytes().to_vec(),
     };
     enqueue_group_control(storage, &control, &[invited_by.to_vec()]);
 

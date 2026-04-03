@@ -65,6 +65,9 @@ pub struct GroupMemberInfo {
     pub role: GroupRole,
     /// Unix timestamp (seconds) when the member joined.
     pub joined_at: u64,
+    /// Sender Key chain key (32 bytes) for decrypting messages from this member.
+    /// Zero-filled until the member distributes their key via `SenderKeyUpdate`.
+    pub sender_chain_key: [u8; 32],
 }
 
 /// Group metadata stored in the `groups` table.

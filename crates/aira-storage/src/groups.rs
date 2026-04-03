@@ -200,6 +200,7 @@ mod tests {
                 display_name: "Admin".into(),
                 role: GroupRole::Admin,
                 joined_at: 1_700_000_000,
+                sender_chain_key: [0; 32],
             }],
             created_by: vec![0xAA; 32],
             created_at: 1_700_000_000,
@@ -282,6 +283,7 @@ mod tests {
             display_name: "Bob".into(),
             role: GroupRole::Member,
             joined_at: 1_700_001_000,
+            sender_chain_key: [0; 32],
         };
         add_member(&storage, &[1; 32], new_member).expect("add member");
 
