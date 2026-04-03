@@ -34,15 +34,32 @@ pub fn safety_number(key_a: &[u8], key_b: &[u8]) -> String {
     format_as_digits(hash.as_bytes(), 60)
 }
 
-/// Format raw bytes as N decimal digits, grouped in 5s.
-fn format_as_digits(bytes: &[u8], count: usize) -> String {
-    // Each byte gives ~2.4 decimal digits via modular extraction
+/// Format a BLAKE3 hash as N decimal digits, grouped in 5s.
+///
+/// Uses BLAKE3 XOF (extendable output) and rejection sampling to produce
+/// uniformly distributed digits (no modular bias).
+fn format_as_digits(hash_bytes: &[u8; 32], count: usize) -> String {
+    // Use BLAKE3 in XOF mode seeded from the hash to get enough random bytes.
+    // Rejection sampling: accept byte < 250 (250 = 25*10), reject >= 250.
+    // Worst case: need ~count * 256/250 ≈ count * 1.024 bytes.
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(hash_bytes);
+    let mut reader = hasher.finalize_xof();
+
     let mut digits = Vec::with_capacity(count);
-    let mut i = 0;
+    let mut buf = [0u8; 64];
     while digits.len() < count {
-        let byte = bytes[i % bytes.len()];
-        digits.push(b'0' + (byte % 10));
-        i += 1;
+        reader.fill(&mut buf);
+        for &byte in &buf {
+            if digits.len() >= count {
+                break;
+            }
+            // Rejection sampling: discard bytes >= 250 to avoid bias
+            // 250 = 25 * 10, so byte % 10 is uniformly distributed for byte < 250
+            if byte < 250 {
+                digits.push(b'0' + (byte % 10));
+            }
+        }
     }
 
     // Group as 5-digit chunks separated by spaces
