@@ -253,6 +253,56 @@ fn rand_entropy() -> [u8; 32] {
     entropy
 }
 
+// ─── Pseudonym Seeds (§12.6) ────────────────────────────────────────────────
+
+/// Derived seed material for a per-context pseudonym keypair (§12.6).
+///
+/// Each counter yields an isolated set of seeds for ML-DSA signing, X25519 DH,
+/// and ML-KEM-768 KEM. Counter→context mapping (group or contact) lives in
+/// storage, not in the derivation path — so even with a compromised master seed,
+/// an attacker cannot link a pseudonym to a specific group without storage access.
+///
+/// # Example
+///
+/// ```
+/// # // Pseudonym derivation requires a MasterSeed, shown conceptually:
+/// # // let seed = MasterSeed::from_phrase("...").unwrap();
+/// # // let ps = seed.derive_pseudonym_seeds(0);
+/// # // ps.signing — 32 bytes for ML-DSA-65 keygen
+/// # // ps.x25519  — 32 bytes for X25519 keygen
+/// # // ps.mlkem   — 32 bytes for ML-KEM-768 keygen
+/// ```
+#[derive(ZeroizeOnDrop)]
+pub struct PseudonymSeeds {
+    /// Seed for ML-DSA-65 signing keypair derivation.
+    pub signing: Zeroizing<[u8; 32]>,
+    /// Seed for X25519 DH keypair derivation.
+    pub x25519: Zeroizing<[u8; 32]>,
+    /// Seed for ML-KEM-768 KEM keypair derivation.
+    pub mlkem: Zeroizing<[u8; 32]>,
+}
+
+impl MasterSeed {
+    /// Derive pseudonym seed material for a specific counter (§12.6 BIP-32 model).
+    ///
+    /// Each counter yields an isolated set of keys: ML-DSA signing, X25519 DH,
+    /// and ML-KEM-768 KEM. Counter→context mapping lives in storage.
+    ///
+    /// # KDF contexts (see `docs/KEY_CONTEXTS.md`)
+    ///
+    /// - `aira/pseudonym/<counter>/signing`
+    /// - `aira/pseudonym/<counter>/x25519`
+    /// - `aira/pseudonym/<counter>/mlkem`
+    #[must_use]
+    pub fn derive_pseudonym_seeds(&self, counter: u32) -> PseudonymSeeds {
+        PseudonymSeeds {
+            signing: self.derive(&format!("aira/pseudonym/{counter}/signing")),
+            x25519: self.derive(&format!("aira/pseudonym/{counter}/x25519")),
+            mlkem: self.derive(&format!("aira/pseudonym/{counter}/mlkem")),
+        }
+    }
+}
+
 /// Test helpers — exposed only in test builds for other modules.
 #[cfg(test)]
 pub(crate) mod test_helpers {
@@ -348,6 +398,91 @@ mod tests {
         assert_ne!(kx, km);
         assert_ne!(kx, ks);
         assert_ne!(km, ks);
+    }
+
+    #[test]
+    fn pseudonym_seeds_deterministic() {
+        let entropy = rand_entropy();
+        let phrase = bip39_encode(&entropy);
+        let seed1 = MasterSeed::from_phrase(&phrase).expect("valid phrase");
+        let seed2 = MasterSeed::from_phrase(&phrase).expect("valid phrase");
+
+        let ps1 = seed1.derive_pseudonym_seeds(0);
+        let ps2 = seed2.derive_pseudonym_seeds(0);
+
+        let s1: &[u8; 32] = &ps1.signing;
+        let s2: &[u8; 32] = &ps2.signing;
+        assert_eq!(s1, s2, "same seed+counter must produce same signing seed");
+
+        let x1: &[u8; 32] = &ps1.x25519;
+        let x2: &[u8; 32] = &ps2.x25519;
+        assert_eq!(x1, x2, "same seed+counter must produce same x25519 seed");
+
+        let m1: &[u8; 32] = &ps1.mlkem;
+        let m2: &[u8; 32] = &ps2.mlkem;
+        assert_eq!(m1, m2, "same seed+counter must produce same mlkem seed");
+    }
+
+    #[test]
+    fn pseudonym_seeds_isolated_across_counters() {
+        let entropy = rand_entropy();
+        let phrase = bip39_encode(&entropy);
+        let seed = MasterSeed::from_phrase(&phrase).expect("valid phrase");
+
+        let ps0 = seed.derive_pseudonym_seeds(0);
+        let ps1 = seed.derive_pseudonym_seeds(1);
+
+        let s0: &[u8; 32] = &ps0.signing;
+        let s1: &[u8; 32] = &ps1.signing;
+        assert_ne!(s0, s1, "different counters must produce different keys");
+
+        let x0: &[u8; 32] = &ps0.x25519;
+        let x1: &[u8; 32] = &ps1.x25519;
+        assert_ne!(x0, x1);
+
+        let m0: &[u8; 32] = &ps0.mlkem;
+        let m1: &[u8; 32] = &ps1.mlkem;
+        assert_ne!(m0, m1);
+    }
+
+    #[test]
+    fn pseudonym_seeds_isolated_from_identity() {
+        let entropy = rand_entropy();
+        let phrase = bip39_encode(&entropy);
+        let seed = MasterSeed::from_phrase(&phrase).expect("valid phrase");
+
+        let ps = seed.derive_pseudonym_seeds(0);
+        let identity = seed.derive("aira/identity/0");
+        let x25519 = seed.derive("aira/x25519/0");
+        let mlkem = seed.derive("aira/mlkem/0");
+        let storage = seed.derive("aira/storage/0");
+
+        let ps_signing: &[u8; 32] = &ps.signing;
+        let ki: &[u8; 32] = &identity;
+        let kx: &[u8; 32] = &x25519;
+        let km: &[u8; 32] = &mlkem;
+        let ks: &[u8; 32] = &storage;
+
+        assert_ne!(ps_signing, ki, "pseudonym must not collide with identity");
+        assert_ne!(ps_signing, kx, "pseudonym must not collide with x25519");
+        assert_ne!(ps_signing, km, "pseudonym must not collide with mlkem");
+        assert_ne!(ps_signing, ks, "pseudonym must not collide with storage");
+    }
+
+    #[test]
+    fn pseudonym_seeds_internal_isolation() {
+        let entropy = rand_entropy();
+        let phrase = bip39_encode(&entropy);
+        let seed = MasterSeed::from_phrase(&phrase).expect("valid phrase");
+
+        let ps = seed.derive_pseudonym_seeds(0);
+        let s: &[u8; 32] = &ps.signing;
+        let x: &[u8; 32] = &ps.x25519;
+        let m: &[u8; 32] = &ps.mlkem;
+
+        assert_ne!(s, x, "signing != x25519 within same pseudonym");
+        assert_ne!(s, m, "signing != mlkem within same pseudonym");
+        assert_ne!(x, m, "x25519 != mlkem within same pseudonym");
     }
 
     #[test]

@@ -190,6 +190,7 @@ pub(crate) fn group_info_to_resp(group: &aira_storage::GroupInfo) -> GroupInfoRe
             .iter()
             .map(|m| GroupMemberResp {
                 pubkey: m.pubkey.clone(),
+                display_name: m.display_name.clone(),
                 role: match m.role {
                     aira_storage::GroupRole::Admin => "admin".into(),
                     aira_storage::GroupRole::Member => "member".into(),
@@ -220,17 +221,19 @@ fn handle_create_group(
 
     let now = now_secs();
 
-    // Creator is Admin
+    // Creator is Admin — pseudonym pubkey derived at UI layer (§12.6)
     let mut members = vec![aira_storage::GroupMemberInfo {
-        pubkey: vec![], // TODO: fill with our own pubkey when identity is wired
+        pubkey: vec![], // TODO: fill with our pseudonym pubkey when identity is wired
+        display_name: String::new(), // TODO: UI will prompt for display name
         role: aira_storage::GroupRole::Admin,
         joined_at: now,
     }];
 
-    // Other members start as Member
+    // Other members start as Member — pseudonym pubkeys provided by invitees (§12.6)
     for pk in member_pubkeys {
         members.push(aira_storage::GroupMemberInfo {
             pubkey: pk.clone(),
+            display_name: String::new(), // Filled when member responds with pseudonym
             role: aira_storage::GroupRole::Member,
             joined_at: now,
         });
@@ -305,6 +308,7 @@ fn handle_group_add_member(
     let now = now_secs();
     let member = aira_storage::GroupMemberInfo {
         pubkey: member_pubkey.to_vec(),
+        display_name: String::new(), // Filled when member responds with pseudonym (§12.6)
         role: aira_storage::GroupRole::Member,
         joined_at: now,
     };

@@ -30,7 +30,7 @@ pub enum GroupRole {
 pub struct GroupMessage {
     /// Group identifier (32 random bytes).
     pub group_id: [u8; 32],
-    /// Sender's ML-DSA public key.
+    /// Sender's pseudonym public key for this group (§12.6).
     pub from: Vec<u8>,
     /// Serialized `PlainPayload` bytes.
     pub payload: Vec<u8>,
@@ -54,7 +54,7 @@ pub struct GroupMessage {
 pub struct EncryptedGroupEnvelope {
     /// Group identifier.
     pub group_id: [u8; 32],
-    /// Sender's ML-DSA public key.
+    /// Sender's pseudonym public key for this group (§12.6).
     pub from: Vec<u8>,
     /// Sender key counter (for ordering & skip detection).
     pub counter: u64,
@@ -78,7 +78,7 @@ pub enum GroupControl {
         group_id: [u8; 32],
         /// Group display name.
         name: String,
-        /// All initial member public keys (including creator).
+        /// All initial member pseudonym pubkeys, including creator (§12.6).
         members: Vec<Vec<u8>>,
         /// Creator's initial Sender Key chain key (encrypted for this recipient).
         creator_sender_key: Vec<u8>,
@@ -88,9 +88,9 @@ pub enum GroupControl {
     AddMember {
         /// Group identifier.
         group_id: [u8; 32],
-        /// New member's ML-DSA public key.
+        /// New member's pseudonym public key for this group (§12.6).
         new_member: Vec<u8>,
-        /// Per-member Sender Keys: `(member_pubkey, encrypted_sender_key)`.
+        /// Per-member Sender Keys: `(pseudonym_pubkey, encrypted_sender_key)`.
         /// New member receives all existing members' keys.
         /// Existing members receive the new member's key.
         sender_keys: Vec<(Vec<u8>, Vec<u8>)>,
@@ -100,7 +100,7 @@ pub enum GroupControl {
     RemoveMember {
         /// Group identifier.
         group_id: [u8; 32],
-        /// Removed member's ML-DSA public key.
+        /// Removed member's pseudonym public key (§12.6).
         removed: Vec<u8>,
     },
 

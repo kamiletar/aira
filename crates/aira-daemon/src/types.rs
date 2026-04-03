@@ -85,7 +85,7 @@ pub enum DaemonRequest {
     CreateGroup {
         /// Group display name.
         name: String,
-        /// ML-DSA public keys of initial members.
+        /// Pseudonym public keys of initial members (§12.6).
         members: Vec<Vec<u8>>,
     },
     /// Get all groups.
@@ -113,14 +113,14 @@ pub enum DaemonRequest {
     GroupAddMember {
         /// Group ID (32 bytes).
         group_id: [u8; 32],
-        /// New member's ML-DSA public key.
+        /// New member's pseudonym public key (§12.6).
         member: Vec<u8>,
     },
     /// Remove a member from a group (Admin only).
     GroupRemoveMember {
         /// Group ID (32 bytes).
         group_id: [u8; 32],
-        /// Member's ML-DSA public key to remove.
+        /// Member's pseudonym public key to remove (§12.6).
         member: Vec<u8>,
     },
     /// Leave a group.
@@ -199,9 +199,9 @@ pub struct GroupInfoResp {
     pub id: [u8; 32],
     /// Group display name.
     pub name: String,
-    /// Member public keys with roles.
+    /// Member pseudonym pubkeys with roles (§12.6).
     pub members: Vec<GroupMemberResp>,
-    /// Creator's public key.
+    /// Creator's pseudonym public key (§12.6).
     pub created_by: Vec<u8>,
     /// Unix timestamp (seconds) of creation.
     pub created_at: u64,
@@ -210,8 +210,10 @@ pub struct GroupInfoResp {
 /// Group member info in daemon responses.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GroupMemberResp {
-    /// Member's ML-DSA public key.
+    /// Member's pseudonym public key for this group (§12.6).
     pub pubkey: Vec<u8>,
+    /// User-chosen display name for this group (§12.6).
+    pub display_name: String,
     /// "admin" or "member".
     pub role: String,
     /// Unix timestamp (seconds) when joined.
@@ -289,7 +291,7 @@ pub enum DaemonEvent {
     GroupMessageReceived {
         /// Group ID (32 bytes).
         group_id: [u8; 32],
-        /// Sender's ML-DSA public key.
+        /// Sender's pseudonym public key for this group (§12.6).
         from: Vec<u8>,
         /// Serialized `PlainPayload` bytes.
         payload: Vec<u8>,
@@ -298,14 +300,14 @@ pub enum DaemonEvent {
     GroupMemberJoined {
         /// Group ID (32 bytes).
         group_id: [u8; 32],
-        /// New member's ML-DSA public key.
+        /// New member's pseudonym public key (§12.6).
         member: Vec<u8>,
     },
     /// A member left a group.
     GroupMemberLeft {
         /// Group ID (32 bytes).
         group_id: [u8; 32],
-        /// Member's ML-DSA public key.
+        /// Member's pseudonym public key (§12.6).
         member: Vec<u8>,
     },
     /// A new group was created (we were invited).
@@ -314,7 +316,7 @@ pub enum DaemonEvent {
         group_id: [u8; 32],
         /// Group name.
         name: String,
-        /// Inviter's ML-DSA public key.
+        /// Inviter's pseudonym public key (§12.6).
         invited_by: Vec<u8>,
     },
 
@@ -526,6 +528,7 @@ mod tests {
             name: "My Group".into(),
             members: vec![GroupMemberResp {
                 pubkey: vec![0xAA; 32],
+                display_name: "Alice".into(),
                 role: "admin".into(),
                 joined_at: 1_700_000_000,
             }],

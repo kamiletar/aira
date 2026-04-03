@@ -57,8 +57,10 @@ pub enum GroupRole {
 /// Information about a group member.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GroupMemberInfo {
-    /// Member's ML-DSA public key.
+    /// Member's pseudonym public key for this group (§12.6).
     pub pubkey: Vec<u8>,
+    /// User-chosen display name for this group (§12.6).
+    pub display_name: String,
     /// Member's role in the group.
     pub role: GroupRole,
     /// Unix timestamp (seconds) when the member joined.
@@ -77,7 +79,7 @@ pub struct GroupInfo {
     pub name: String,
     /// Group members.
     pub members: Vec<GroupMemberInfo>,
-    /// Creator's ML-DSA public key.
+    /// Creator's pseudonym public key (§12.6).
     pub created_by: Vec<u8>,
     /// Unix timestamp (seconds) when the group was created.
     pub created_at: u64,

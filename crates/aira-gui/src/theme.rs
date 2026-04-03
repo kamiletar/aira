@@ -270,7 +270,7 @@ pub fn apply_theme(ctx: &egui::Context) {
 /// Set up custom fonts for the application.
 ///
 /// Call once at startup. Adds Inter as proportional and
-/// JetBrains Mono as monospace font.
+/// `JetBrains` Mono as monospace font.
 pub fn setup_fonts(ctx: &egui::Context) {
     let mut fonts = FontDefinitions::default();
 

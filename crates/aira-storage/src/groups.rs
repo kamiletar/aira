@@ -197,6 +197,7 @@ mod tests {
             name: format!("Group {id_byte}"),
             members: vec![GroupMemberInfo {
                 pubkey: vec![0xAA; 32],
+                display_name: "Admin".into(),
                 role: GroupRole::Admin,
                 joined_at: 1_700_000_000,
             }],
@@ -278,6 +279,7 @@ mod tests {
 
         let new_member = GroupMemberInfo {
             pubkey: vec![0xBB; 32],
+            display_name: "Bob".into(),
             role: GroupRole::Member,
             joined_at: 1_700_001_000,
         };
