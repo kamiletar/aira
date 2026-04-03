@@ -8,6 +8,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
 use aira_core::proto::{MessageMeta, PlainPayload};
+use aira_core::util::{now_micros, rand_id};
 use aira_daemon::types::{DeviceInfoResp, GroupInfoResp};
 use aira_storage::{ContactInfo, StoredMessage};
 
@@ -441,27 +442,6 @@ fn stored_to_display(msg: &StoredMessage, sender_alias: Option<String>) -> Displ
         timestamp_micros: msg.timestamp_micros,
         sender_alias,
     }
-}
-
-/// Generate a random 16-byte message ID.
-fn rand_id() -> [u8; 16] {
-    let mut id = [0u8; 16];
-    // Simple approach: use timestamp + counter for uniqueness.
-    // In production this is fine since IDs from daemon are the canonical ones.
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default();
-    let nanos = now.as_nanos() as u64;
-    id[..8].copy_from_slice(&nanos.to_le_bytes());
-    id
-}
-
-/// Current time in microseconds.
-fn now_micros() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_micros() as u64
 }
 
 #[cfg(test)]

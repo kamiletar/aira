@@ -36,3 +36,4 @@ pub mod safety;
 pub mod seed;
 pub mod spam;
 pub mod sync;
+pub mod util;

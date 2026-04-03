@@ -7,6 +7,7 @@
 use std::collections::{HashMap, HashSet};
 
 use aira_core::proto::{MessageMeta, PlainPayload};
+use aira_core::util::{now_micros, rand_id};
 use aira_daemon::types::{DaemonEvent, DaemonRequest};
 use aira_storage::{ContactInfo, StoredMessage};
 
@@ -436,32 +437,6 @@ fn payload_to_text(payload: &PlainPayload) -> String {
             format!("[unknown message type {type_id} — please update Aira]")
         }
     }
-}
-
-/// Generate a random 16-byte message ID.
-#[allow(clippy::cast_possible_truncation)]
-fn rand_id() -> [u8; 16] {
-    use std::time::SystemTime;
-
-    let mut id = [0u8; 16];
-    let nanos = SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
-    id[..8].copy_from_slice(&(nanos as u64).to_le_bytes());
-    id[8..16].copy_from_slice(&(nanos.wrapping_shr(64) as u64).to_le_bytes());
-    id
-}
-
-/// Current time in microseconds since epoch.
-#[allow(clippy::cast_possible_truncation)]
-fn now_micros() -> u64 {
-    use std::time::SystemTime;
-
-    SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_micros() as u64
 }
 
 /// Short hex representation of a pubkey (first 8 bytes).
