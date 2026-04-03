@@ -584,6 +584,230 @@ fn handle_accept_group_invite(
     DaemonResponse::MyAddress(our_pubkey)
 }
 
+// ─── Receiver-side: incoming message processing ───────────────────────────
+
+/// Process an incoming `PlainPayload` received from the network.
+///
+/// Called when the network layer decrypts a 1-on-1 message and delivers it.
+/// Routes to the appropriate handler based on payload variant.
+///
+/// # Errors
+///
+/// Returns a description of what went wrong.
+pub fn handle_incoming_payload(
+    storage: &aira_storage::Storage,
+    seed: &MasterSeed,
+    sender_pubkey: &[u8],
+    payload_bytes: &[u8],
+    event_tx: &tokio::sync::broadcast::Sender<crate::types::DaemonEvent>,
+) -> Result<(), String> {
+    let payload: aira_core::proto::PlainPayload =
+        postcard::from_bytes(payload_bytes).map_err(|e| format!("deserialize payload: {e}"))?;
+
+    match payload {
+        aira_core::proto::PlainPayload::GroupControl(control) => {
+            handle_incoming_group_control(storage, seed, sender_pubkey, &control, event_tx)
+        }
+        aira_core::proto::PlainPayload::Text(text) => {
+            // Store as incoming 1-on-1 message
+            let cid = aira_storage::contact_id(sender_pubkey);
+            let msg = aira_storage::StoredMessage {
+                id: rand_id(),
+                sender_is_self: false,
+                payload_bytes: text.into_bytes(),
+                timestamp_micros: now_micros(),
+                ttl_secs: None,
+                read_at: None,
+                expires_at: None,
+            };
+            aira_storage::messages::store(storage, cid, &msg).map_err(|e| e.to_string())?;
+            let _ = event_tx.send(crate::types::DaemonEvent::MessageReceived {
+                from: sender_pubkey.to_vec(),
+                payload: msg.payload_bytes,
+            });
+            Ok(())
+        }
+        // Other payload types (Action, Media, Reaction, etc.) — store as raw bytes
+        _ => {
+            let cid = aira_storage::contact_id(sender_pubkey);
+            let msg = aira_storage::StoredMessage {
+                id: rand_id(),
+                sender_is_self: false,
+                payload_bytes: payload_bytes.to_vec(),
+                timestamp_micros: now_micros(),
+                ttl_secs: None,
+                read_at: None,
+                expires_at: None,
+            };
+            aira_storage::messages::store(storage, cid, &msg).map_err(|e| e.to_string())?;
+            let _ = event_tx.send(crate::types::DaemonEvent::MessageReceived {
+                from: sender_pubkey.to_vec(),
+                payload: msg.payload_bytes,
+            });
+            Ok(())
+        }
+    }
+}
+
+/// Process an incoming `GroupControl` message from a group member.
+///
+/// Dispatches to variant-specific handlers and emits appropriate `DaemonEvent`s.
+#[allow(clippy::too_many_lines)]
+fn handle_incoming_group_control(
+    storage: &aira_storage::Storage,
+    seed: &MasterSeed,
+    sender_pubkey: &[u8],
+    control: &aira_core::group_proto::GroupControl,
+    event_tx: &tokio::sync::broadcast::Sender<crate::types::DaemonEvent>,
+) -> Result<(), String> {
+    match control {
+        aira_core::group_proto::GroupControl::CreateGroup {
+            group_id,
+            name,
+            members,
+            creator_sender_key,
+        } => {
+            // We're being invited to a new group
+            let now = now_secs();
+            let group_members: Vec<aira_storage::GroupMemberInfo> = members
+                .iter()
+                .map(|pk| {
+                    let is_creator = pk == sender_pubkey;
+                    aira_storage::GroupMemberInfo {
+                        pubkey: pk.clone(),
+                        display_name: String::new(),
+                        role: if is_creator {
+                            aira_storage::GroupRole::Admin
+                        } else {
+                            aira_storage::GroupRole::Member
+                        },
+                        joined_at: now,
+                        sender_chain_key: if is_creator {
+                            let mut key = [0u8; 32];
+                            let len = creator_sender_key.len().min(32);
+                            key[..len].copy_from_slice(&creator_sender_key[..len]);
+                            key
+                        } else {
+                            [0; 32]
+                        },
+                    }
+                })
+                .collect();
+
+            let group = aira_storage::GroupInfo {
+                id: *group_id,
+                name: name.clone(),
+                members: group_members,
+                created_by: sender_pubkey.to_vec(),
+                created_at: now,
+            };
+
+            aira_storage::groups::create_group(storage, &group).map_err(|e| e.to_string())?;
+
+            let _ = event_tx.send(crate::types::DaemonEvent::GroupInvite {
+                group_id: *group_id,
+                name: name.clone(),
+                invited_by: sender_pubkey.to_vec(),
+            });
+
+            // Auto-accept: derive pseudonym and send SenderKeyUpdate back
+            // (UI can override with manual AcceptGroupInvite if preferred)
+            let _ = handle_accept_group_invite(storage, seed, group_id, "", sender_pubkey);
+
+            Ok(())
+        }
+
+        aira_core::group_proto::GroupControl::AddMember {
+            group_id,
+            new_member,
+            sender_keys,
+        } => {
+            let mut group =
+                aira_storage::groups::get_group(storage, group_id).map_err(|e| e.to_string())?;
+
+            // Add new member if not already present
+            if !group.members.iter().any(|m| m.pubkey == *new_member) {
+                group.members.push(aira_storage::GroupMemberInfo {
+                    pubkey: new_member.clone(),
+                    display_name: String::new(),
+                    role: aira_storage::GroupRole::Member,
+                    joined_at: now_secs(),
+                    sender_chain_key: [0; 32],
+                });
+            }
+
+            // Update sender chain keys from distributed keys
+            for (pk, chain_key_bytes) in sender_keys {
+                if let Some(member) = group.members.iter_mut().find(|m| m.pubkey == *pk) {
+                    let len = chain_key_bytes.len().min(32);
+                    member.sender_chain_key[..len].copy_from_slice(&chain_key_bytes[..len]);
+                }
+            }
+
+            aira_storage::groups::update_group(storage, &group).map_err(|e| e.to_string())?;
+
+            let _ = event_tx.send(crate::types::DaemonEvent::GroupMemberJoined {
+                group_id: *group_id,
+                member: new_member.clone(),
+            });
+
+            Ok(())
+        }
+
+        aira_core::group_proto::GroupControl::RemoveMember { group_id, removed } => {
+            aira_storage::groups::remove_member(storage, group_id, removed)
+                .map_err(|e| e.to_string())?;
+
+            let _ = event_tx.send(crate::types::DaemonEvent::GroupMemberLeft {
+                group_id: *group_id,
+                member: removed.clone(),
+            });
+
+            // Trigger Sender Key rotation: generate new key and distribute
+            let our_sk = aira_core::group::SenderKeyState::new();
+            let group =
+                aira_storage::groups::get_group(storage, group_id).map_err(|e| e.to_string())?;
+            let recipients: Vec<Vec<u8>> = group.members.iter().map(|m| m.pubkey.clone()).collect();
+
+            let update = aira_core::group_proto::GroupControl::SenderKeyUpdate {
+                group_id: *group_id,
+                new_key: our_sk.chain_key_bytes().to_vec(),
+            };
+            enqueue_group_control(storage, &update, &recipients);
+
+            Ok(())
+        }
+
+        aira_core::group_proto::GroupControl::SenderKeyUpdate { group_id, new_key } => {
+            let mut group =
+                aira_storage::groups::get_group(storage, group_id).map_err(|e| e.to_string())?;
+
+            // Find the sender in group members and update their chain key
+            if let Some(member) = group.members.iter_mut().find(|m| m.pubkey == sender_pubkey) {
+                let len = new_key.len().min(32);
+                member.sender_chain_key = [0; 32];
+                member.sender_chain_key[..len].copy_from_slice(&new_key[..len]);
+
+                aira_storage::groups::update_group(storage, &group).map_err(|e| e.to_string())?;
+            }
+
+            Ok(())
+        }
+
+        aira_core::group_proto::GroupControl::Leave { group_id } => {
+            aira_storage::groups::remove_member(storage, group_id, sender_pubkey)
+                .map_err(|e| e.to_string())?;
+
+            let _ = event_tx.send(crate::types::DaemonEvent::GroupMemberLeft {
+                group_id: *group_id,
+                member: sender_pubkey.to_vec(),
+            });
+
+            Ok(())
+        }
+    }
+}
+
 /// Handle `SetTransportMode` request.
 fn handle_set_transport_mode(storage: &aira_storage::Storage, mode_str: &str) -> DaemonResponse {
     if let Err(e) = mode_str.parse::<aira_net::transport::TransportMode>() {
