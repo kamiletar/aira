@@ -375,15 +375,33 @@ Alice ротирует pseudonym в группе "Work Chat":
 
 #### 12.6.10 Safety Numbers с pseudonyms
 
-Safety Number (§6.9) вычисляется по **pseudonym pubkey**, не по identity key:
+Safety Number (§6.9) вычисляется по **pseudonym pubkey**, не по identity key.
+
+**Для 1-на-1 контактов:**
 
 ```
-safety_number(alice_pseudonym_pubkey, bob_pseudonym_pubkey, version)
+safety_number(my_pseudonym_for_bob, bob_pseudonym_for_me, version)
 ```
 
 Каждая пара контактов имеет уникальный Safety Number, привязанный
 к конкретным pseudonyms. При ротации pseudonym — Safety Number меняется,
 контакт получает уведомление.
+
+**Для групп:**
+
+Каждый участник группы имеет **один** pseudonym, видимый **всем** участникам
+этой группы (один counter = одна группа). Safety Number в группе вычисляется
+попарно: между моим pseudonym для этой группы и pseudonym каждого участника:
+
+```
+safety_number(my_group_pseudonym, alice_group_pseudonym, version)
+safety_number(my_group_pseudonym, bob_group_pseudonym, version)
+```
+
+> **Важно:** group pseudonym ≠ contact pseudonym. Alice, с которой я общаюсь
+> 1-на-1, имеет один pseudonym для меня. Та же Alice в группе "Work" имеет
+> другой pseudonym. Safety Numbers будут разные — это ожидаемое поведение,
+> обеспечивающее unlinkability.
 
 ---
 
