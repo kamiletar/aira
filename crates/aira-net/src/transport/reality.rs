@@ -150,7 +150,9 @@ impl AiraTransport for RealityTransport {
 /// Returns the first 8 bytes of `BLAKE3("aira/reality/sid/0", PSK)`.
 fn generate_short_id(psk: &[u8; 32]) -> [u8; SHORT_ID_LEN] {
     let hash = blake3::derive_key(REALITY_SID_CONTEXT, psk);
-    hash[..SHORT_ID_LEN].try_into().expect("8 bytes from 32")
+    let mut sid = [0u8; SHORT_ID_LEN];
+    sid.copy_from_slice(&hash[..SHORT_ID_LEN]);
+    sid
 }
 
 // ─── ClientHello parser ────────────────────────────────────────────────────
@@ -526,9 +528,15 @@ async fn aira_auth_server(stream: &mut BoxedStream, psk: &[u8; 32]) -> Result<()
         return Err(TransportError::RealityAuth("bad auth magic".into()));
     }
 
-    let nonce: [u8; 32] = frame[1..33].try_into().unwrap();
-    let received_mac: [u8; 32] = frame[33..65].try_into().unwrap();
-    let timestamp_bytes: [u8; 8] = frame[65..73].try_into().unwrap();
+    let nonce: [u8; 32] = frame[1..33]
+        .try_into()
+        .map_err(|_| TransportError::RealityAuth("nonce slice mismatch".into()))?;
+    let received_mac: [u8; 32] = frame[33..65]
+        .try_into()
+        .map_err(|_| TransportError::RealityAuth("mac slice mismatch".into()))?;
+    let timestamp_bytes: [u8; 8] = frame[65..73]
+        .try_into()
+        .map_err(|_| TransportError::RealityAuth("timestamp slice mismatch".into()))?;
 
     // Verify MAC.
     let expected_mac = compute_auth_mac(psk, &timestamp_bytes, &nonce);
@@ -833,9 +841,8 @@ impl AsyncWrite for RealityStream {
         let mut obfuscated = buf[..chunk_len].to_vec();
         this.write_key.apply(&mut obfuscated);
 
-        let len_bytes = u16::try_from(chunk_len)
-            .expect("clamped to u16::MAX")
-            .to_le_bytes();
+        #[allow(clippy::cast_possible_truncation)]
+        let len_bytes = (chunk_len as u16).to_le_bytes();
         let mut frame = Vec::with_capacity(2 + chunk_len);
         frame.extend_from_slice(&len_bytes);
         frame.extend_from_slice(&obfuscated);

@@ -88,9 +88,11 @@ impl CryptoProvider for AwsLcProvider {
     type KemDecapsKey = AwsLcKemDecapsKey;
     type KemEncapsKey = AwsLcKemEncapsKey;
 
-    fn identity_keygen(seed: &[u8; 32]) -> (Self::SigningKey, Self::VerifyingKey) {
+    fn identity_keygen(
+        seed: &[u8; 32],
+    ) -> Result<(Self::SigningKey, Self::VerifyingKey), CryptoError> {
         let keypair = PqdsaKeyPair::from_seed(&ML_DSA_65_SIGNING, seed)
-            .expect("ML-DSA-65 keygen from valid 32-byte seed should not fail");
+            .map_err(|_| CryptoError::InvalidKey)?;
 
         let vk_bytes = keypair.public_key().as_ref().to_vec();
 
@@ -100,17 +102,17 @@ impl CryptoProvider for AwsLcProvider {
         };
         let verifying_key = AwsLcVerifyingKey { bytes: vk_bytes };
 
-        (signing_key, verifying_key)
+        Ok((signing_key, verifying_key))
     }
 
-    fn sign(key: &Self::SigningKey, msg: &[u8]) -> Vec<u8> {
+    fn sign(key: &Self::SigningKey, msg: &[u8]) -> Result<Vec<u8>, CryptoError> {
         let mut sig_buf = vec![0u8; MLDSA65_SIGNATURE_LEN];
         let sig_len = key
             .keypair
             .sign(msg, &mut sig_buf)
-            .expect("signing with valid key should not fail");
+            .map_err(|_| CryptoError::SigningFailed)?;
         sig_buf.truncate(sig_len);
-        sig_buf
+        Ok(sig_buf)
     }
 
     fn verify(key: &Self::VerifyingKey, msg: &[u8], sig: &[u8]) -> bool {
@@ -119,7 +121,9 @@ impl CryptoProvider for AwsLcProvider {
         unparsed.verify(msg, sig).is_ok()
     }
 
-    fn kem_keygen(seed: &[u8; 32]) -> (Self::KemDecapsKey, Self::KemEncapsKey) {
+    fn kem_keygen(
+        seed: &[u8; 32],
+    ) -> Result<(Self::KemDecapsKey, Self::KemEncapsKey), CryptoError> {
         // Use RustCrypto ml-kem for deterministic keygen (FIPS 203 compatible),
         // then import raw bytes into aws-lc-rs types for runtime operations.
         use ml_kem::{EncodedSizeUser, KemCore, MlKem768};
@@ -135,26 +139,26 @@ impl CryptoProvider for AwsLcProvider {
 
         // Import into aws-lc-rs
         let aws_dk = aws_kem::DecapsulationKey::new(&ML_KEM_768, &dk_bytes)
-            .expect("ML-KEM-768 secret key import should not fail");
+            .map_err(|_| CryptoError::InvalidKey)?;
 
-        (
+        Ok((
             AwsLcKemDecapsKey {
                 inner: aws_dk,
                 raw: Zeroizing::new(dk_bytes),
             },
             AwsLcKemEncapsKey { bytes: ek_bytes },
-        )
+        ))
     }
 
-    fn kem_encaps(pk: &Self::KemEncapsKey) -> (Vec<u8>, Zeroizing<[u8; 32]>) {
+    fn kem_encaps(pk: &Self::KemEncapsKey) -> Result<(Vec<u8>, Zeroizing<[u8; 32]>), CryptoError> {
         let aws_ek = aws_kem::EncapsulationKey::new(&ML_KEM_768, &pk.bytes)
-            .expect("ML-KEM-768 public key import should not fail");
+            .map_err(|_| CryptoError::InvalidKey)?;
         let (ct, ss) = aws_ek
             .encapsulate()
-            .expect("ML-KEM encapsulation should not fail");
+            .map_err(|_| CryptoError::EncapsFailed)?;
         let mut shared = [0u8; 32];
         shared.copy_from_slice(ss.as_ref());
-        (ct.as_ref().to_vec(), Zeroizing::new(shared))
+        Ok((ct.as_ref().to_vec(), Zeroizing::new(shared)))
     }
 
     fn kem_decaps(sk: &Self::KemDecapsKey, ct: &[u8]) -> Result<Zeroizing<[u8; 32]>, CryptoError> {
@@ -224,17 +228,17 @@ mod tests {
     #[test]
     fn dsa_sign_verify_roundtrip() {
         let seed = [42u8; 32];
-        let (sk, vk) = AwsLcProvider::identity_keygen(&seed);
+        let (sk, vk) = AwsLcProvider::identity_keygen(&seed).expect("keygen");
         let msg = b"hello aira fips";
-        let sig = AwsLcProvider::sign(&sk, msg);
+        let sig = AwsLcProvider::sign(&sk, msg).expect("sign");
         assert!(AwsLcProvider::verify(&vk, msg, &sig));
     }
 
     #[test]
     fn dsa_deterministic_keygen() {
         let seed = [7u8; 32];
-        let (_, vk1) = AwsLcProvider::identity_keygen(&seed);
-        let (_, vk2) = AwsLcProvider::identity_keygen(&seed);
+        let (_, vk1) = AwsLcProvider::identity_keygen(&seed).expect("keygen1");
+        let (_, vk2) = AwsLcProvider::identity_keygen(&seed).expect("keygen2");
         assert_eq!(
             vk1.bytes, vk2.bytes,
             "deterministic keygen must produce identical public keys"
@@ -244,24 +248,24 @@ mod tests {
     #[test]
     fn dsa_invalid_signature_rejected() {
         let seed = [1u8; 32];
-        let (_, vk) = AwsLcProvider::identity_keygen(&seed);
+        let (_, vk) = AwsLcProvider::identity_keygen(&seed).expect("keygen");
         assert!(!AwsLcProvider::verify(&vk, b"msg", &[0u8; 100]));
     }
 
     #[test]
     fn dsa_wrong_key_rejected() {
-        let (sk1, _) = AwsLcProvider::identity_keygen(&[1u8; 32]);
-        let (_, vk2) = AwsLcProvider::identity_keygen(&[2u8; 32]);
-        let sig = AwsLcProvider::sign(&sk1, b"msg");
+        let (sk1, _) = AwsLcProvider::identity_keygen(&[1u8; 32]).expect("keygen1");
+        let (_, vk2) = AwsLcProvider::identity_keygen(&[2u8; 32]).expect("keygen2");
+        let sig = AwsLcProvider::sign(&sk1, b"msg").expect("sign");
         assert!(!AwsLcProvider::verify(&vk2, b"msg", &sig));
     }
 
     #[test]
     fn kem_encaps_decaps_roundtrip() {
         let seed = [99u8; 32];
-        let (dk, ek) = AwsLcProvider::kem_keygen(&seed);
+        let (dk, ek) = AwsLcProvider::kem_keygen(&seed).expect("keygen");
 
-        let (ct, shared_send) = AwsLcProvider::kem_encaps(&ek);
+        let (ct, shared_send) = AwsLcProvider::kem_encaps(&ek).expect("encaps");
         let shared_recv = AwsLcProvider::kem_decaps(&dk, &ct).expect("decaps should succeed");
 
         let ss: &[u8; 32] = &shared_send;
@@ -272,20 +276,20 @@ mod tests {
     #[test]
     fn kem_deterministic_keygen() {
         let seed = [55u8; 32];
-        let (dk1, ek1) = AwsLcProvider::kem_keygen(&seed);
-        let (dk2, ek2) = AwsLcProvider::kem_keygen(&seed);
+        let (dk1, ek1) = AwsLcProvider::kem_keygen(&seed).expect("keygen1");
+        let (dk2, ek2) = AwsLcProvider::kem_keygen(&seed).expect("keygen2");
 
         // Both copies should have identical public keys
         assert_eq!(ek1.bytes, ek2.bytes, "deterministic keygen must match");
 
         // Cross-decaps: encaps to ek1, decaps with dk2
-        let (ct, ss) = AwsLcProvider::kem_encaps(&ek1);
+        let (ct, ss) = AwsLcProvider::kem_encaps(&ek1).expect("encaps1");
         let ss2 = AwsLcProvider::kem_decaps(&dk2, &ct).expect("cross decaps");
         let a: &[u8; 32] = &ss;
         let b: &[u8; 32] = &ss2;
         assert_eq!(a, b);
 
-        let (ct, ss) = AwsLcProvider::kem_encaps(&ek2);
+        let (ct, ss) = AwsLcProvider::kem_encaps(&ek2).expect("encaps2");
         let ss2 = AwsLcProvider::kem_decaps(&dk1, &ct).expect("cross decaps");
         let a: &[u8; 32] = &ss;
         let b: &[u8; 32] = &ss2;
@@ -295,7 +299,7 @@ mod tests {
     #[test]
     fn kem_invalid_ciphertext_rejected() {
         let seed = [33u8; 32];
-        let (dk, _) = AwsLcProvider::kem_keygen(&seed);
+        let (dk, _) = AwsLcProvider::kem_keygen(&seed).expect("keygen");
         let garbage = vec![0u8; MLKEM768_CIPHERTEXT_LEN];
         // ML-KEM uses implicit rejection — decaps succeeds but produces
         // a different shared secret. Just verify no panic.
@@ -305,7 +309,7 @@ mod tests {
     #[test]
     fn encode_decode_verifying_key_roundtrip() {
         let seed = [10u8; 32];
-        let (_, vk) = AwsLcProvider::identity_keygen(&seed);
+        let (_, vk) = AwsLcProvider::identity_keygen(&seed).expect("keygen");
         let encoded = AwsLcProvider::encode_verifying_key(&vk);
         let decoded = AwsLcProvider::decode_verifying_key(&encoded).expect("decode");
         assert_eq!(vk.bytes, decoded.bytes);
@@ -314,7 +318,7 @@ mod tests {
     #[test]
     fn encode_decode_kem_keys_roundtrip() {
         let seed = [20u8; 32];
-        let (dk, ek) = AwsLcProvider::kem_keygen(&seed);
+        let (dk, ek) = AwsLcProvider::kem_keygen(&seed).expect("keygen");
 
         // Encaps key roundtrip
         let ek_bytes = AwsLcProvider::encode_kem_encaps_key(&ek);
@@ -326,7 +330,7 @@ mod tests {
         let dk2 = AwsLcProvider::decode_kem_decaps_key(&dk_bytes).expect("decode dk");
 
         // Verify functionality: encaps with original ek, decaps with restored dk
-        let (ct, ss1) = AwsLcProvider::kem_encaps(&ek);
+        let (ct, ss1) = AwsLcProvider::kem_encaps(&ek).expect("encaps");
         let ss2 = AwsLcProvider::kem_decaps(&dk2, &ct).expect("decaps with restored key");
         let a: &[u8; 32] = &ss1;
         let b: &[u8; 32] = &ss2;

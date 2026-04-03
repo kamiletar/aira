@@ -33,19 +33,40 @@ pub trait CryptoProvider {
     type KemEncapsKey: Clone;
 
     /// Generate ML-DSA-65 identity keypair from a 32-byte seed.
-    fn identity_keygen(seed: &[u8; 32]) -> (Self::SigningKey, Self::VerifyingKey);
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CryptoError::InvalidKey`] if the seed is rejected by the backend.
+    fn identity_keygen(
+        seed: &[u8; 32],
+    ) -> Result<(Self::SigningKey, Self::VerifyingKey), CryptoError>;
 
     /// Sign a message with ML-DSA-65.
-    fn sign(key: &Self::SigningKey, msg: &[u8]) -> Vec<u8>;
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CryptoError::SigningFailed`] if the backend rejects the operation.
+    fn sign(key: &Self::SigningKey, msg: &[u8]) -> Result<Vec<u8>, CryptoError>;
 
     /// Verify an ML-DSA-65 signature.
     fn verify(key: &Self::VerifyingKey, msg: &[u8], sig: &[u8]) -> bool;
 
     /// Generate ML-KEM-768 keypair from a 32-byte seed.
-    fn kem_keygen(seed: &[u8; 32]) -> (Self::KemDecapsKey, Self::KemEncapsKey);
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CryptoError::InvalidKey`] if the seed is rejected by the backend.
+    fn kem_keygen(seed: &[u8; 32])
+        -> Result<(Self::KemDecapsKey, Self::KemEncapsKey), CryptoError>;
 
     /// ML-KEM-768 encapsulation. Returns (ciphertext, `shared_secret`).
-    fn kem_encaps(pk: &Self::KemEncapsKey) -> (Vec<u8>, zeroize::Zeroizing<[u8; 32]>);
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CryptoError::EncapsFailed`] if encapsulation fails.
+    fn kem_encaps(
+        pk: &Self::KemEncapsKey,
+    ) -> Result<(Vec<u8>, zeroize::Zeroizing<[u8; 32]>), CryptoError>;
 
     /// ML-KEM-768 decapsulation. Returns `shared_secret`.
     ///
@@ -94,6 +115,10 @@ pub trait CryptoProvider {
 pub enum CryptoError {
     #[error("KEM decapsulation failed")]
     DecapsFailed,
+    #[error("KEM encapsulation failed")]
+    EncapsFailed,
+    #[error("signing failed")]
+    SigningFailed,
     #[error("signature verification failed")]
     VerificationFailed,
     #[error("invalid key material")]

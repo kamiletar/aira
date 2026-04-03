@@ -18,6 +18,7 @@ use chacha20poly1305::{
 };
 use serde::{Deserialize, Serialize};
 use x25519_dalek::{PublicKey as X25519PublicKey, StaticSecret};
+use zeroize::Zeroize;
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
@@ -27,6 +28,9 @@ const MAX_SKIP: u64 = 1000;
 
 /// PQ ratchet steps every N messages in the same direction.
 const PQ_RATCHET_INTERVAL: u64 = 50;
+
+/// Maximum envelope ciphertext size (64 KB, SPEC.md §6.22).
+const MAX_ENVELOPE_SIZE: usize = 65_536;
 
 // ─── Ratchet header (sent alongside ciphertext) ─────────────────────────────
 
@@ -141,6 +145,23 @@ pub struct RatchetSnapshot {
     pub skipped_entries: Vec<([u8; 32], u64, [u8; 32])>,
 }
 
+impl Drop for RatchetSnapshot {
+    fn drop(&mut self) {
+        self.root_key.zeroize();
+        self.send_chain_key.zeroize();
+        self.send_dh_secret_bytes.zeroize();
+        if let Some(ref mut ck) = self.recv_chain_key {
+            ck.zeroize();
+        }
+        if let Some(ref mut dk) = self.pq_dk_bytes {
+            dk.zeroize();
+        }
+        for entry in &mut self.skipped_entries {
+            entry.2.zeroize();
+        }
+    }
+}
+
 // ─── RatchetSession ─────────────────────────────────────────────────────────
 
 /// Full Triple Ratchet (SPQR) session state.
@@ -178,26 +199,29 @@ impl RatchetSession {
     /// Initialize a ratchet session from handshake-derived keys.
     ///
     /// The `is_initiator` flag determines the initial DH ratchet direction.
-    #[must_use]
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AiraError::Encryption`] if PQ keygen fails.
     pub fn new(
         root_key: [u8; 32],
         send_chain_key: [u8; 32],
         recv_chain_key: [u8; 32],
         peer_dh_public: [u8; 32],
         pq_enabled: bool,
-    ) -> Self {
+    ) -> Result<Self, AiraError> {
         let send_dh_secret = StaticSecret::random_from_rng(rand::thread_rng());
         let send_dh_public = X25519PublicKey::from(&send_dh_secret);
 
         let (pq_dk, pq_ek) = if pq_enabled {
             let seed: [u8; 32] = blake3::derive_key("aira/ratchet/pq-init", &root_key);
-            let (dk, ek) = ActiveProvider::kem_keygen(&seed);
+            let (dk, ek) = ActiveProvider::kem_keygen(&seed).map_err(|_| AiraError::Encryption)?;
             (Some(dk), Some(ek))
         } else {
             (None, None)
         };
 
-        Self {
+        Ok(Self {
             root_key,
             send_chain_key,
             send_counter: 0,
@@ -213,17 +237,20 @@ impl RatchetSession {
             pq_mlkem_ek: pq_ek,
             peer_pq_ek: None,
             skipped: HashMap::new(),
-        }
+        })
     }
 
     /// Create a session with PQ ratchet disabled (degradation mode).
-    #[must_use]
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AiraError::Encryption`] if initialization fails.
     pub fn new_classical(
         root_key: [u8; 32],
         send_chain_key: [u8; 32],
         recv_chain_key: [u8; 32],
         peer_dh_public: [u8; 32],
-    ) -> Self {
+    ) -> Result<Self, AiraError> {
         Self::new(
             root_key,
             send_chain_key,
@@ -292,6 +319,13 @@ impl RatchetSession {
         header: &MessageHeader,
         envelope: &EncryptedEnvelope,
     ) -> Result<Vec<u8>, AiraError> {
+        // DoS protection: reject oversized ciphertexts before AEAD allocation
+        if envelope.ciphertext.len() > MAX_ENVELOPE_SIZE {
+            return Err(AiraError::MessageTooLarge {
+                size: envelope.ciphertext.len(),
+            });
+        }
+
         // Try skipped message keys first
         if let Some(msg_key) = self.skipped.remove(&(header.dh_public, header.counter)) {
             let nonce = derive_nonce(&msg_key, header.counter);
@@ -344,7 +378,7 @@ impl RatchetSession {
             .ok_or(AiraError::Handshake("no peer PQ EK".into()))?;
 
         // Encapsulate toward peer
-        let (ct, ss) = ActiveProvider::kem_encaps(peer_ek);
+        let (ct, ss) = ActiveProvider::kem_encaps(peer_ek).map_err(|_| AiraError::Encryption)?;
 
         // Mix PQ secret into root key
         self.root_key = pq_mix(&self.root_key, &ss);
@@ -352,7 +386,7 @@ impl RatchetSession {
 
         // Generate new PQ keypair for peer to use
         let seed: [u8; 32] = blake3::derive_key("aira/ratchet/pq-rekey", &self.root_key);
-        let (dk, ek) = ActiveProvider::kem_keygen(&seed);
+        let (dk, ek) = ActiveProvider::kem_keygen(&seed).map_err(|_| AiraError::Encryption)?;
         let ek_bytes = ActiveProvider::encode_kem_encaps_key(&ek);
         self.pq_mlkem_dk = Some(dk);
         self.pq_mlkem_ek = Some(ek);
@@ -447,7 +481,7 @@ impl RatchetSession {
     /// # Errors
     ///
     /// Returns [`AiraError::Decryption`] if PQ key deserialization fails.
-    pub fn from_snapshot(snap: RatchetSnapshot) -> Result<Self, AiraError> {
+    pub fn from_snapshot(mut snap: RatchetSnapshot) -> Result<Self, AiraError> {
         let send_dh_secret = StaticSecret::from(snap.send_dh_secret_bytes);
         let send_dh_public = X25519PublicKey::from(snap.send_dh_public_bytes);
 
@@ -476,7 +510,7 @@ impl RatchetSession {
             .transpose()?;
 
         let mut skipped = HashMap::new();
-        for (pk, counter, key) in snap.skipped_entries {
+        for (pk, counter, key) in std::mem::take(&mut snap.skipped_entries) {
             skipped.insert((pk, counter), key);
         }
 
@@ -526,6 +560,20 @@ impl RatchetSession {
     }
 }
 
+impl Drop for RatchetSession {
+    fn drop(&mut self) {
+        self.root_key.zeroize();
+        self.send_chain_key.zeroize();
+        if let Some(ref mut ck) = self.recv_chain_key {
+            ck.zeroize();
+        }
+        // Zeroize all skipped message keys
+        for key in self.skipped.values_mut() {
+            key.zeroize();
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -538,14 +586,16 @@ mod tests {
         // Create Alice first, then Bob with Alice's actual DH public key
         let mut alice = RatchetSession::new_classical(
             root, send_ck, recv_ck, [0u8; 32], // placeholder, will be replaced
-        );
+        )
+        .expect("alice session");
 
-        let mut bob = RatchetSession::new_classical(
+        let bob = RatchetSession::new_classical(
             root,
             recv_ck,                          // Bob's send = Alice's recv
             send_ck,                          // Bob's recv = Alice's send
             *alice.send_dh_public.as_bytes(), // Bob knows Alice's actual DH pubkey
-        );
+        )
+        .expect("bob session");
 
         // Alice knows Bob's actual DH pubkey
         alice.peer_dh_public = Some(*bob.send_dh_public.as_bytes());

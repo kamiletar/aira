@@ -68,21 +68,25 @@ pub struct Initiator {
 
 impl Initiator {
     /// Create an initiator from a master seed.
-    #[must_use]
-    pub fn new(seed: &MasterSeed) -> Self {
-        let identity = Identity::from_seed(seed);
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AiraError::Crypto`] if key generation fails.
+    pub fn new(seed: &MasterSeed) -> Result<Self, AiraError> {
+        let identity = Identity::from_seed(seed)?;
         let dh_seed = seed.derive("aira/x25519/0");
         let kem_seed = seed.derive("aira/mlkem/0");
 
         let x25519_sk = kem::x25519_secret_from_seed(&dh_seed);
-        let (mlkem_dk, mlkem_ek) = ActiveProvider::kem_keygen(&kem_seed);
+        let (mlkem_dk, mlkem_ek) =
+            ActiveProvider::kem_keygen(&kem_seed).map_err(|e| AiraError::Crypto(e.to_string()))?;
 
         let eph_secret = EphemeralSecret::random_from_rng(rand::thread_rng());
         let eph_public = X25519PublicKey::from(&eph_secret);
 
         let caps = default_capabilities();
 
-        Self {
+        Ok(Self {
             identity,
             eph_secret: Some(eph_secret),
             eph_public,
@@ -90,12 +94,15 @@ impl Initiator {
             mlkem_dk,
             mlkem_ek,
             caps,
-        }
+        })
     }
 
     /// Generate the `HandshakeInit` message to send to the responder.
-    #[must_use]
-    pub fn start(&self) -> HandshakeInit {
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AiraError::Crypto`] if signing fails.
+    pub fn start(&self) -> Result<HandshakeInit, AiraError> {
         let identity_pk = self.identity.public_key_bytes();
         let kem_encaps_pk = encode_mlkem_ek(&self.mlkem_ek);
         let x25519_pk = *self.eph_public.as_bytes();
@@ -109,15 +116,15 @@ impl Initiator {
         signed_data.extend_from_slice(&self.caps.max_version.to_le_bytes());
         signed_data.extend_from_slice(&self.caps.features.to_le_bytes());
 
-        let signature = self.identity.sign(&signed_data);
+        let signature = self.identity.sign(&signed_data)?;
 
-        HandshakeInit {
+        Ok(HandshakeInit {
             identity_pk,
             kem_encaps_pk,
             x25519_pk,
             capabilities: self.caps.clone(),
             signature,
-        }
+        })
     }
 
     /// Process the responder's `HandshakeAck` and derive session keys.
@@ -174,24 +181,28 @@ pub struct Responder {
 
 impl Responder {
     /// Create a responder from a master seed.
-    #[must_use]
-    pub fn new(seed: &MasterSeed) -> Self {
-        let identity = Identity::from_seed(seed);
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AiraError::Crypto`] if key generation fails.
+    pub fn new(seed: &MasterSeed) -> Result<Self, AiraError> {
+        let identity = Identity::from_seed(seed)?;
         let dh_seed = seed.derive("aira/x25519/0");
         let kem_seed = seed.derive("aira/mlkem/0");
 
         let x25519_sk = kem::x25519_secret_from_seed(&dh_seed);
-        let (mlkem_dk, mlkem_ek) = ActiveProvider::kem_keygen(&kem_seed);
+        let (mlkem_dk, mlkem_ek) =
+            ActiveProvider::kem_keygen(&kem_seed).map_err(|e| AiraError::Crypto(e.to_string()))?;
 
         let caps = default_capabilities();
 
-        Self {
+        Ok(Self {
             identity,
             _x25519_sk: x25519_sk,
             _mlkem_dk: mlkem_dk,
             _mlkem_ek: mlkem_ek,
             caps,
-        }
+        })
     }
 
     /// Process an `HandshakeInit` and produce the `HandshakeAck` + session keys.
@@ -214,7 +225,8 @@ impl Responder {
         let init_mlkem_ek = decode_mlkem_ek(&init.kem_encaps_pk)?;
 
         // ML-KEM encapsulation toward initiator
-        let (mlkem_ct, mlkem_ss) = ActiveProvider::kem_encaps(&init_mlkem_ek);
+        let (mlkem_ct, mlkem_ss) = ActiveProvider::kem_encaps(&init_mlkem_ek)
+            .map_err(|e| AiraError::Crypto(e.to_string()))?;
 
         // X25519: generate ephemeral, DH with initiator's ephemeral
         let eph_secret = EphemeralSecret::random_from_rng(rand::thread_rng());
@@ -232,7 +244,7 @@ impl Responder {
         };
 
         let ack_signed_data = build_ack_signed_data(&ack);
-        let signature = self.identity.sign(&ack_signed_data);
+        let signature = self.identity.sign(&ack_signed_data)?;
         let ack = HandshakeAck { signature, ..ack };
 
         // Combine secrets
@@ -353,45 +365,58 @@ mod tests {
 
     #[test]
     fn full_handshake_produces_same_session_keys() {
-        let alice_seed = make_seed(1);
-        let bob_seed = make_seed(2);
+        // Larger stack needed: ML-DSA-65 + ML-KEM-768 keys are ~12KB on stack
+        std::thread::Builder::new()
+            .stack_size(8 * 1024 * 1024)
+            .spawn(|| {
+                let alice_seed = make_seed(1);
+                let bob_seed = make_seed(2);
 
-        let alice = Initiator::new(&alice_seed);
-        let bob = Responder::new(&bob_seed);
+                let alice = Initiator::new(&alice_seed).expect("alice init");
+                let bob = Responder::new(&bob_seed).expect("bob init");
 
-        let init_msg = alice.start();
-        let (ack_msg, bob_keys) = bob.respond(&init_msg).expect("bob respond");
-        let alice_keys = alice.finish(&ack_msg).expect("alice finish");
+                let init_msg = alice.start().expect("alice start");
+                let (ack_msg, bob_keys) = bob.respond(&init_msg).expect("bob respond");
+                let alice_keys = alice.finish(&ack_msg).expect("alice finish");
 
-        let ar: &[u8; 32] = &alice_keys.root_key;
-        let br: &[u8; 32] = &bob_keys.root_key;
-        assert_eq!(ar, br, "root keys must match");
+                let ar: &[u8; 32] = &alice_keys.root_key;
+                let br: &[u8; 32] = &bob_keys.root_key;
+                assert_eq!(ar, br, "root keys must match");
 
-        // Note: send/recv are swapped between initiator and responder
-        let as_: &[u8; 32] = &alice_keys.send_chain_key;
-        let br_: &[u8; 32] = &bob_keys.recv_chain_key;
-        assert_eq!(as_, br_, "alice send = bob recv");
+                let as_: &[u8; 32] = &alice_keys.send_chain_key;
+                let br_: &[u8; 32] = &bob_keys.recv_chain_key;
+                assert_eq!(as_, br_, "alice send = bob recv");
 
-        let ar_: &[u8; 32] = &alice_keys.recv_chain_key;
-        let bs_: &[u8; 32] = &bob_keys.send_chain_key;
-        assert_eq!(ar_, bs_, "alice recv = bob send");
+                let ar_: &[u8; 32] = &alice_keys.recv_chain_key;
+                let bs_: &[u8; 32] = &bob_keys.send_chain_key;
+                assert_eq!(ar_, bs_, "alice recv = bob send");
+            })
+            .expect("thread spawn")
+            .join()
+            .expect("thread join");
     }
 
     #[test]
     fn handshake_invalid_signature_rejected() {
-        let alice_seed = make_seed(3);
-        let bob_seed = make_seed(4);
+        std::thread::Builder::new()
+            .stack_size(8 * 1024 * 1024)
+            .spawn(|| {
+                let alice_seed = make_seed(3);
+                let bob_seed = make_seed(4);
 
-        let alice = Initiator::new(&alice_seed);
-        let bob = Responder::new(&bob_seed);
+                let alice = Initiator::new(&alice_seed).expect("alice init");
+                let bob = Responder::new(&bob_seed).expect("bob init");
 
-        let mut init_msg = alice.start();
-        // Corrupt signature
-        if let Some(b) = init_msg.signature.first_mut() {
-            *b ^= 0xFF;
-        }
+                let mut init_msg = alice.start().expect("alice start");
+                if let Some(b) = init_msg.signature.first_mut() {
+                    *b ^= 0xFF;
+                }
 
-        assert!(bob.respond(&init_msg).is_err());
+                assert!(bob.respond(&init_msg).is_err());
+            })
+            .expect("thread spawn")
+            .join()
+            .expect("thread join");
     }
 
     #[test]

@@ -20,18 +20,20 @@ impl CryptoProvider for RustCryptoProvider {
     type KemDecapsKey = <MlKem768 as KemCore>::DecapsulationKey;
     type KemEncapsKey = <MlKem768 as KemCore>::EncapsulationKey;
 
-    fn identity_keygen(seed: &[u8; 32]) -> (Self::SigningKey, Self::VerifyingKey) {
+    fn identity_keygen(
+        seed: &[u8; 32],
+    ) -> Result<(Self::SigningKey, Self::VerifyingKey), CryptoError> {
         let seed_arr = ml_dsa::B32::from(*seed);
         let kp = MlDsa65::key_gen_internal(&seed_arr);
-        (kp.signing_key().clone(), kp.verifying_key().clone())
+        Ok((kp.signing_key().clone(), kp.verifying_key().clone()))
     }
 
-    fn sign(key: &Self::SigningKey, msg: &[u8]) -> Vec<u8> {
+    fn sign(key: &Self::SigningKey, msg: &[u8]) -> Result<Vec<u8>, CryptoError> {
         // Deterministic signing with empty context
         let sig: Signature<MlDsa65> = key
             .sign_deterministic(msg, &[])
-            .expect("signing should not fail with valid key");
-        sig.encode().to_vec()
+            .map_err(|_| CryptoError::SigningFailed)?;
+        Ok(sig.encode().to_vec())
     }
 
     fn verify(key: &Self::VerifyingKey, msg: &[u8], sig: &[u8]) -> bool {
@@ -41,22 +43,24 @@ impl CryptoProvider for RustCryptoProvider {
         key.verify(msg, &signature).is_ok()
     }
 
-    fn kem_keygen(seed: &[u8; 32]) -> (Self::KemDecapsKey, Self::KemEncapsKey) {
+    fn kem_keygen(
+        seed: &[u8; 32],
+    ) -> Result<(Self::KemDecapsKey, Self::KemEncapsKey), CryptoError> {
         // Split single 32-byte seed into two independent seeds for ML-KEM
         // via BLAKE3-KDF with unique contexts (key isolation)
         let d = blake3::derive_key("aira/kem-keygen-d", seed);
         let z = blake3::derive_key("aira/kem-keygen-z", seed);
         let d = ml_kem::B32::from(d);
         let z = ml_kem::B32::from(z);
-        MlKem768::generate_deterministic(&d, &z)
+        Ok(MlKem768::generate_deterministic(&d, &z))
     }
 
-    fn kem_encaps(pk: &Self::KemEncapsKey) -> (Vec<u8>, Zeroizing<[u8; 32]>) {
+    fn kem_encaps(pk: &Self::KemEncapsKey) -> Result<(Vec<u8>, Zeroizing<[u8; 32]>), CryptoError> {
         let mut rng = rand::thread_rng();
         let (ct, shared_key) = pk
             .encapsulate(&mut rng)
-            .expect("ML-KEM encapsulation should not fail");
-        (ct.to_vec(), Zeroizing::new(shared_key.into()))
+            .map_err(|()| CryptoError::EncapsFailed)?;
+        Ok((ct.to_vec(), Zeroizing::new(shared_key.into())))
     }
 
     fn kem_decaps(sk: &Self::KemDecapsKey, ct: &[u8]) -> Result<Zeroizing<[u8; 32]>, CryptoError> {
@@ -115,22 +119,22 @@ mod tests {
     #[test]
     fn dsa_sign_verify_roundtrip() {
         let seed = [42u8; 32];
-        let (sk, vk) = RustCryptoProvider::identity_keygen(&seed);
+        let (sk, vk) = RustCryptoProvider::identity_keygen(&seed).expect("keygen");
         let msg = b"hello aira";
-        let sig = RustCryptoProvider::sign(&sk, msg);
+        let sig = RustCryptoProvider::sign(&sk, msg).expect("sign");
         assert!(RustCryptoProvider::verify(&vk, msg, &sig));
     }
 
     #[test]
     fn dsa_deterministic_keygen() {
         let seed = [7u8; 32];
-        let (sk1, vk1) = RustCryptoProvider::identity_keygen(&seed);
-        let (sk2, vk2) = RustCryptoProvider::identity_keygen(&seed);
+        let (sk1, vk1) = RustCryptoProvider::identity_keygen(&seed).expect("keygen1");
+        let (sk2, vk2) = RustCryptoProvider::identity_keygen(&seed).expect("keygen2");
 
         // Same seed → same keys
         let msg = b"test determinism";
-        let sig1 = RustCryptoProvider::sign(&sk1, msg);
-        let sig2 = RustCryptoProvider::sign(&sk2, msg);
+        let sig1 = RustCryptoProvider::sign(&sk1, msg).expect("sign1");
+        let sig2 = RustCryptoProvider::sign(&sk2, msg).expect("sign2");
         assert_eq!(
             sig1, sig2,
             "deterministic keygen must produce identical signatures"
@@ -142,24 +146,24 @@ mod tests {
     #[test]
     fn dsa_invalid_signature_rejected() {
         let seed = [1u8; 32];
-        let (_, vk) = RustCryptoProvider::identity_keygen(&seed);
+        let (_, vk) = RustCryptoProvider::identity_keygen(&seed).expect("keygen");
         assert!(!RustCryptoProvider::verify(&vk, b"msg", &[0u8; 100]));
     }
 
     #[test]
     fn dsa_wrong_key_rejected() {
-        let (sk1, _) = RustCryptoProvider::identity_keygen(&[1u8; 32]);
-        let (_, vk2) = RustCryptoProvider::identity_keygen(&[2u8; 32]);
-        let sig = RustCryptoProvider::sign(&sk1, b"msg");
+        let (sk1, _) = RustCryptoProvider::identity_keygen(&[1u8; 32]).expect("keygen1");
+        let (_, vk2) = RustCryptoProvider::identity_keygen(&[2u8; 32]).expect("keygen2");
+        let sig = RustCryptoProvider::sign(&sk1, b"msg").expect("sign");
         assert!(!RustCryptoProvider::verify(&vk2, b"msg", &sig));
     }
 
     #[test]
     fn kem_encaps_decaps_roundtrip() {
         let seed = [99u8; 32];
-        let (dk, ek) = RustCryptoProvider::kem_keygen(&seed);
+        let (dk, ek) = RustCryptoProvider::kem_keygen(&seed).expect("keygen");
 
-        let (ct, shared_send) = RustCryptoProvider::kem_encaps(&ek);
+        let (ct, shared_send) = RustCryptoProvider::kem_encaps(&ek).expect("encaps");
         let shared_recv = RustCryptoProvider::kem_decaps(&dk, &ct).expect("decaps should succeed");
 
         let ss: &[u8; 32] = &shared_send;
@@ -170,17 +174,17 @@ mod tests {
     #[test]
     fn kem_deterministic_keygen() {
         let seed = [55u8; 32];
-        let (dk1, ek1) = RustCryptoProvider::kem_keygen(&seed);
-        let (dk2, ek2) = RustCryptoProvider::kem_keygen(&seed);
+        let (dk1, ek1) = RustCryptoProvider::kem_keygen(&seed).expect("keygen1");
+        let (dk2, ek2) = RustCryptoProvider::kem_keygen(&seed).expect("keygen2");
 
         // Encapsulate to both copies — both should decaps correctly
-        let (ct, ss) = RustCryptoProvider::kem_encaps(&ek1);
+        let (ct, ss) = RustCryptoProvider::kem_encaps(&ek1).expect("encaps1");
         let ss2 = RustCryptoProvider::kem_decaps(&dk2, &ct).expect("cross decaps");
         let a: &[u8; 32] = &ss;
         let b: &[u8; 32] = &ss2;
         assert_eq!(a, b);
 
-        let (ct, ss) = RustCryptoProvider::kem_encaps(&ek2);
+        let (ct, ss) = RustCryptoProvider::kem_encaps(&ek2).expect("encaps2");
         let ss2 = RustCryptoProvider::kem_decaps(&dk1, &ct).expect("cross decaps");
         let a: &[u8; 32] = &ss;
         let b: &[u8; 32] = &ss2;
@@ -190,7 +194,7 @@ mod tests {
     #[test]
     fn kem_invalid_ciphertext_rejected() {
         let seed = [33u8; 32];
-        let (dk, _) = RustCryptoProvider::kem_keygen(&seed);
+        let (dk, _) = RustCryptoProvider::kem_keygen(&seed).expect("keygen");
         // ML-KEM always decapsulates (implicit rejection), but with wrong seed → different key
         // So we just verify decaps doesn't panic on garbage input
         let garbage = vec![0u8; 1088]; // ML-KEM-768 ciphertext size

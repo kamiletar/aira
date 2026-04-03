@@ -236,4 +236,6 @@ pub enum AiraError {
     DeviceGroupFull { max: usize },
     #[error("device error: {0}")]
     Device(String),
+    #[error("crypto backend error: {0}")]
+    Crypto(String),
 }

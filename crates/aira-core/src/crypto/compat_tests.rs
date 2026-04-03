@@ -20,8 +20,8 @@ use super::CryptoProvider;
 #[test]
 fn cross_dsa_same_seed_same_public_key() {
     let seed = [42u8; 32];
-    let (_, rc_vk) = RustCryptoProvider::identity_keygen(&seed);
-    let (_, aws_vk) = AwsLcProvider::identity_keygen(&seed);
+    let (_, rc_vk) = RustCryptoProvider::identity_keygen(&seed).expect("rc keygen");
+    let (_, aws_vk) = AwsLcProvider::identity_keygen(&seed).expect("aws keygen");
 
     let rc_bytes = RustCryptoProvider::encode_verifying_key(&rc_vk);
     let aws_bytes = AwsLcProvider::encode_verifying_key(&aws_vk);
@@ -35,11 +35,11 @@ fn cross_dsa_same_seed_same_public_key() {
 #[test]
 fn cross_dsa_rustcrypto_sign_awslc_verify() {
     let seed = [7u8; 32];
-    let (rc_sk, _) = RustCryptoProvider::identity_keygen(&seed);
-    let (_, aws_vk) = AwsLcProvider::identity_keygen(&seed);
+    let (rc_sk, _) = RustCryptoProvider::identity_keygen(&seed).expect("rc keygen");
+    let (_, aws_vk) = AwsLcProvider::identity_keygen(&seed).expect("aws keygen");
 
     let msg = b"cross-backend verification test";
-    let sig = RustCryptoProvider::sign(&rc_sk, msg);
+    let sig = RustCryptoProvider::sign(&rc_sk, msg).expect("sign");
 
     assert!(
         AwsLcProvider::verify(&aws_vk, msg, &sig),
@@ -50,11 +50,11 @@ fn cross_dsa_rustcrypto_sign_awslc_verify() {
 #[test]
 fn cross_dsa_awslc_sign_rustcrypto_verify() {
     let seed = [13u8; 32];
-    let (_, rc_vk) = RustCryptoProvider::identity_keygen(&seed);
-    let (aws_sk, _) = AwsLcProvider::identity_keygen(&seed);
+    let (_, rc_vk) = RustCryptoProvider::identity_keygen(&seed).expect("rc keygen");
+    let (aws_sk, _) = AwsLcProvider::identity_keygen(&seed).expect("aws keygen");
 
     let msg = b"reverse cross-backend test";
-    let sig = AwsLcProvider::sign(&aws_sk, msg);
+    let sig = AwsLcProvider::sign(&aws_sk, msg).expect("sign");
 
     assert!(
         RustCryptoProvider::verify(&rc_vk, msg, &sig),
@@ -67,8 +67,8 @@ fn cross_dsa_awslc_sign_rustcrypto_verify() {
 #[test]
 fn cross_kem_same_seed_same_keys() {
     let seed = [55u8; 32];
-    let (rc_dk, rc_ek) = RustCryptoProvider::kem_keygen(&seed);
-    let (aws_dk, aws_ek) = AwsLcProvider::kem_keygen(&seed);
+    let (rc_dk, rc_ek) = RustCryptoProvider::kem_keygen(&seed).expect("rc keygen");
+    let (aws_dk, aws_ek) = AwsLcProvider::kem_keygen(&seed).expect("aws keygen");
 
     let rc_ek_bytes = RustCryptoProvider::encode_kem_encaps_key(&rc_ek);
     let aws_ek_bytes = AwsLcProvider::encode_kem_encaps_key(&aws_ek);
@@ -90,11 +90,11 @@ fn cross_kem_same_seed_same_keys() {
 #[test]
 fn cross_kem_rustcrypto_encaps_awslc_decaps() {
     let seed = [99u8; 32];
-    let (_, rc_ek) = RustCryptoProvider::kem_keygen(&seed);
-    let (aws_dk, _) = AwsLcProvider::kem_keygen(&seed);
+    let (_, rc_ek) = RustCryptoProvider::kem_keygen(&seed).expect("rc keygen");
+    let (aws_dk, _) = AwsLcProvider::kem_keygen(&seed).expect("aws keygen");
 
     // Encapsulate with RustCrypto
-    let (ct, rc_ss) = RustCryptoProvider::kem_encaps(&rc_ek);
+    let (ct, rc_ss) = RustCryptoProvider::kem_encaps(&rc_ek).expect("encaps");
 
     // Decapsulate with aws-lc-rs
     let aws_ss = AwsLcProvider::kem_decaps(&aws_dk, &ct).expect("cross decaps");
@@ -110,11 +110,11 @@ fn cross_kem_rustcrypto_encaps_awslc_decaps() {
 #[test]
 fn cross_kem_awslc_encaps_rustcrypto_decaps() {
     let seed = [77u8; 32];
-    let (rc_dk, _) = RustCryptoProvider::kem_keygen(&seed);
-    let (_, aws_ek) = AwsLcProvider::kem_keygen(&seed);
+    let (rc_dk, _) = RustCryptoProvider::kem_keygen(&seed).expect("rc keygen");
+    let (_, aws_ek) = AwsLcProvider::kem_keygen(&seed).expect("aws keygen");
 
     // Encapsulate with aws-lc-rs
-    let (ct, aws_ss) = AwsLcProvider::kem_encaps(&aws_ek);
+    let (ct, aws_ss) = AwsLcProvider::kem_encaps(&aws_ek).expect("encaps");
 
     // Decapsulate with RustCrypto
     let rc_ss = RustCryptoProvider::kem_decaps(&rc_dk, &ct).expect("cross decaps");
@@ -132,7 +132,7 @@ fn cross_kem_awslc_encaps_rustcrypto_decaps() {
 #[test]
 fn cross_verifying_key_decode() {
     let seed = [30u8; 32];
-    let (_, rc_vk) = RustCryptoProvider::identity_keygen(&seed);
+    let (_, rc_vk) = RustCryptoProvider::identity_keygen(&seed).expect("keygen");
     let rc_bytes = RustCryptoProvider::encode_verifying_key(&rc_vk);
 
     // Decode RustCrypto bytes with aws-lc-rs
@@ -145,7 +145,7 @@ fn cross_verifying_key_decode() {
 #[test]
 fn cross_kem_encaps_key_decode() {
     let seed = [40u8; 32];
-    let (_, rc_ek) = RustCryptoProvider::kem_keygen(&seed);
+    let (_, rc_ek) = RustCryptoProvider::kem_keygen(&seed).expect("keygen");
     let rc_bytes = RustCryptoProvider::encode_kem_encaps_key(&rc_ek);
 
     // Decode RustCrypto bytes with aws-lc-rs and use for encapsulation

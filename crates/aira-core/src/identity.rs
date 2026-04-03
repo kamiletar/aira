@@ -24,31 +24,39 @@ impl Identity {
     ///
     /// Derives the identity signing key via BLAKE3-KDF with context
     /// `"aira/identity/0"`.
-    #[must_use]
-    pub fn from_seed(seed: &MasterSeed) -> Self {
+    /// Create identity from a master seed.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AiraError::Crypto`] if key generation fails.
+    pub fn from_seed(seed: &MasterSeed) -> Result<Self, AiraError> {
         let derived = seed.derive("aira/identity/0");
-        let (signing_key, verifying_key) = ActiveProvider::identity_keygen(&derived);
-        Self {
+        let (signing_key, verifying_key) = ActiveProvider::identity_keygen(&derived)
+            .map_err(|e| AiraError::Crypto(e.to_string()))?;
+        Ok(Self {
             signing_key,
             verifying_key,
-        }
+        })
     }
 
     /// Create identity from a BIP-39 phrase (convenience wrapper).
     ///
     /// # Errors
     ///
-    /// Returns [`AiraError::SeedDerivation`] or [`AiraError::InvalidSeedPhrase`]
-    /// if the phrase is invalid.
+    /// Returns [`AiraError::SeedDerivation`], [`AiraError::InvalidSeedPhrase`],
+    /// or [`AiraError::Crypto`] if the phrase is invalid or keygen fails.
     pub fn from_phrase(phrase: &str) -> Result<Self, AiraError> {
         let seed = MasterSeed::from_phrase(phrase)?;
-        Ok(Self::from_seed(&seed))
+        Self::from_seed(&seed)
     }
 
     /// Sign a message with the identity's ML-DSA-65 signing key.
-    #[must_use]
-    pub fn sign(&self, msg: &[u8]) -> Vec<u8> {
-        ActiveProvider::sign(&self.signing_key, msg)
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AiraError::Crypto`] if signing fails.
+    pub fn sign(&self, msg: &[u8]) -> Result<Vec<u8>, AiraError> {
+        ActiveProvider::sign(&self.signing_key, msg).map_err(|e| AiraError::Crypto(e.to_string()))
     }
 
     /// Verify a signature against the identity's public key.
@@ -113,37 +121,43 @@ mod tests {
 
     #[test]
     fn identity_from_seed_is_deterministic() {
-        let seed = test_seed();
-        let id1 = Identity::from_seed(&seed);
-        let id2 = Identity::from_seed(&seed);
+        // Larger stack: ML-DSA-65 keygen uses ~4KB+ on stack
+        std::thread::Builder::new()
+            .stack_size(8 * 1024 * 1024)
+            .spawn(|| {
+                let seed = test_seed();
+                let id1 = Identity::from_seed(&seed).expect("from_seed 1");
+                let id2 = Identity::from_seed(&seed).expect("from_seed 2");
 
-        // Same seed → same keys (public keys must match)
-        assert_eq!(
-            id1.public_key_bytes(),
-            id2.public_key_bytes(),
-            "same seed must produce identical public keys"
-        );
+                assert_eq!(
+                    id1.public_key_bytes(),
+                    id2.public_key_bytes(),
+                    "same seed must produce identical public keys"
+                );
 
-        // Cross-verification: sig from one key verifies with the other
-        let msg = b"determinism check";
-        let sig1 = id1.sign(msg);
-        let sig2 = id2.sign(msg);
-        assert!(id1.verify(msg, &sig2));
-        assert!(id2.verify(msg, &sig1));
+                let msg = b"determinism check";
+                let sig1 = id1.sign(msg).expect("sign1");
+                let sig2 = id2.sign(msg).expect("sign2");
+                assert!(id1.verify(msg, &sig2));
+                assert!(id2.verify(msg, &sig1));
+            })
+            .expect("thread spawn")
+            .join()
+            .expect("thread join");
     }
 
     #[test]
     fn identity_sign_verify() {
-        let id = Identity::from_seed(&test_seed());
+        let id = Identity::from_seed(&test_seed()).expect("from_seed");
         let msg = b"hello aira";
-        let sig = id.sign(msg);
+        let sig = id.sign(msg).expect("sign");
         assert!(id.verify(msg, &sig));
         assert!(!id.verify(b"wrong message", &sig));
     }
 
     #[test]
     fn identity_fingerprint_format() {
-        let id = Identity::from_seed(&test_seed());
+        let id = Identity::from_seed(&test_seed()).expect("from_seed");
         let fp = id.fingerprint();
         // Format: xxxx-xxxx-xxxx-xxxx (19 chars total)
         assert_eq!(fp.len(), 19);
@@ -152,7 +166,7 @@ mod tests {
 
     #[test]
     fn identity_public_key_size() {
-        let id = Identity::from_seed(&test_seed());
+        let id = Identity::from_seed(&test_seed()).expect("from_seed");
         let pk = id.public_key_bytes();
         assert_eq!(pk.len(), 1952, "ML-DSA-65 verifying key is 1952 bytes");
     }

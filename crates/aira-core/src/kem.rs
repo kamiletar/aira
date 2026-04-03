@@ -40,18 +40,20 @@ pub struct HybridKemOutput {
 ///
 /// * `peer_x25519_pk` — peer's static `X25519` public key
 /// * `peer_mlkem_ek` — peer's `ML-KEM-768` encapsulation key
-#[must_use]
+/// # Errors
+///
+/// Returns [`CryptoError::EncapsFailed`] if ML-KEM encapsulation fails.
 pub fn hybrid_encaps(
     peer_x25519_pk: &X25519PublicKey,
     peer_mlkem_ek: &<ActiveProvider as CryptoProvider>::KemEncapsKey,
-) -> HybridKemOutput {
+) -> Result<HybridKemOutput, CryptoError> {
     // X25519 ephemeral DH
     let eph_secret = EphemeralSecret::random_from_rng(rand::thread_rng());
     let eph_public = X25519PublicKey::from(&eph_secret);
     let x25519_ss = eph_secret.diffie_hellman(peer_x25519_pk);
 
     // ML-KEM-768 encapsulation
-    let (mlkem_ct, mlkem_ss) = ActiveProvider::kem_encaps(peer_mlkem_ek);
+    let (mlkem_ct, mlkem_ss) = ActiveProvider::kem_encaps(peer_mlkem_ek)?;
 
     // Combine via BLAKE3-KDF
     let shared_secret = combine_secrets(
@@ -61,11 +63,11 @@ pub fn hybrid_encaps(
         &mlkem_ct,
     );
 
-    HybridKemOutput {
+    Ok(HybridKemOutput {
         x25519_ct: *eph_public.as_bytes(),
         mlkem_ct,
         shared_secret,
-    }
+    })
 }
 
 /// Perform hybrid decapsulation.
@@ -119,7 +121,9 @@ pub(crate) fn combine_secrets(
 
     // Build KDF input: counter || hashed_secrets || ciphertexts
     let counter: [u8; 4] = 1u32.to_be_bytes();
-    let mut kdf_input = Vec::with_capacity(4 + 32 + 32 + x25519_ct.len() + mlkem_ct.len());
+    let mut kdf_input = Zeroizing::new(Vec::with_capacity(
+        4 + 32 + 32 + x25519_ct.len() + mlkem_ct.len(),
+    ));
     kdf_input.extend_from_slice(&counter);
     kdf_input.extend_from_slice(h_x25519.as_bytes());
     kdf_input.extend_from_slice(h_mlkem.as_bytes());
@@ -162,7 +166,7 @@ mod tests {
 
         let x_sk = x25519_secret_from_seed(&x_seed);
         let x_pk = x25519_public_key(&x_sk);
-        let (m_dk, m_ek) = ActiveProvider::kem_keygen(&m_seed);
+        let (m_dk, m_ek) = ActiveProvider::kem_keygen(&m_seed).expect("kem keygen");
 
         (x_sk, x_pk, m_dk, m_ek)
     }
@@ -171,7 +175,7 @@ mod tests {
     fn hybrid_encaps_decaps_roundtrip() {
         let (x_sk, x_pk, m_dk, m_ek) = test_keypair();
 
-        let output = hybrid_encaps(&x_pk, &m_ek);
+        let output = hybrid_encaps(&x_pk, &m_ek).expect("encaps");
         let decapped = hybrid_decaps(&x_sk, &m_dk, &output.x25519_ct, &output.mlkem_ct)
             .expect("decaps should succeed");
 
@@ -190,10 +194,10 @@ mod tests {
         let x_seed2 = seed2.derive("aira/x25519/0");
         let m_seed2 = seed2.derive("aira/mlkem/0");
         let x_pk2 = x25519_public_key(&x25519_secret_from_seed(&x_seed2));
-        let (_, m_ek2) = ActiveProvider::kem_keygen(&m_seed2);
+        let (_, m_ek2) = ActiveProvider::kem_keygen(&m_seed2).expect("kem keygen2");
 
-        let out1 = hybrid_encaps(&x_pk1, &m_ek1);
-        let out2 = hybrid_encaps(&x_pk2, &m_ek2);
+        let out1 = hybrid_encaps(&x_pk1, &m_ek1).expect("encaps1");
+        let out2 = hybrid_encaps(&x_pk2, &m_ek2).expect("encaps2");
 
         let a: &[u8; 32] = &out1.shared_secret;
         let b: &[u8; 32] = &out2.shared_secret;
@@ -203,7 +207,7 @@ mod tests {
     #[test]
     fn tampered_mlkem_ct_fails() {
         let (x_sk, x_pk, m_dk, m_ek) = test_keypair();
-        let output = hybrid_encaps(&x_pk, &m_ek);
+        let output = hybrid_encaps(&x_pk, &m_ek).expect("encaps");
 
         // Tamper with ML-KEM ciphertext
         let mut bad_ct = output.mlkem_ct.clone();
