@@ -115,7 +115,9 @@ pub fn handle_request(
                 Err(e) => DaemonResponse::Error(e.to_string()),
             }
         }
-        DaemonRequest::SendFile { to: _, path } => handle_send_file(blob_store, transfer_mgr, path),
+        DaemonRequest::SendFile { to, path } => {
+            handle_send_file(storage, blob_store, transfer_mgr, &to, path)
+        }
         DaemonRequest::SetTransportMode { mode } => handle_set_transport_mode(storage, &mode),
         DaemonRequest::GetTransportMode => handle_get_transport_mode(storage),
 
@@ -186,17 +188,39 @@ pub fn handle_request(
 
         // ─── Device operations (SPEC.md §14) ────────────────────────────
         DaemonRequest::GenerateLinkCode => {
-            // TODO(M8): use actual seed; for now return placeholder
-            DaemonResponse::LinkCode("000000".into())
+            let code = aira_core::device::generate_link_code(seed, now_secs());
+            DaemonResponse::LinkCode(code)
         }
-        DaemonRequest::LinkDevice {
-            code: _,
-            device_name,
-        } => {
-            // TODO(M8): verify code, establish sync channel
-            DaemonResponse::DeviceLinked {
-                device_id: [0; 32],
-                name: device_name,
+        DaemonRequest::LinkDevice { code, device_name } => {
+            if !aira_core::device::verify_link_code(seed, &code, now_secs()) {
+                return DaemonResponse::Error("invalid or expired link code".into());
+            }
+            // Derive a device ID and store the new linked device
+            let device_id = {
+                let hash = blake3::derive_key("aira/device/id-from-code", code.as_bytes());
+                let mut id = [0u8; 32];
+                id.copy_from_slice(&hash);
+                id
+            };
+            let device_info = aira_storage::DeviceInfo {
+                device_id,
+                name: device_name.clone(),
+                node_id: vec![], // Populated when device announces its iroh NodeId
+                priority: 2,     // Secondary device by default
+                is_primary: false,
+                created_at: now_secs(),
+                last_seen: now_secs(),
+            };
+            let info_bytes = match postcard::to_allocvec(&device_info) {
+                Ok(b) => b,
+                Err(e) => return DaemonResponse::Error(format!("serialize device: {e}")),
+            };
+            match aira_storage::devices::save_device(storage, &device_id, &info_bytes) {
+                Ok(()) => DaemonResponse::DeviceLinked {
+                    device_id,
+                    name: device_name,
+                },
+                Err(e) => DaemonResponse::Error(e.to_string()),
             }
         }
         DaemonRequest::GetDevices => match aira_storage::devices::list_devices(storage) {
@@ -835,10 +859,12 @@ fn handle_get_transport_mode(storage: &aira_storage::Storage) -> DaemonResponse 
     }
 }
 
-/// Handle a `SendFile` request: validate, import to blob store, track transfer.
+/// Handle a `SendFile` request: validate, import to blob store, enqueue `FileStart`, track transfer.
 fn handle_send_file(
+    storage: &aira_storage::Storage,
     blob_store: &aira_net::blobs::BlobStore,
     transfer_mgr: &crate::transfers::TransferManager,
+    to: &[u8],
     path: std::path::PathBuf,
 ) -> DaemonResponse {
     if !path.exists() {
@@ -865,6 +891,24 @@ fn handle_send_file(
         |n| n.to_string_lossy().to_string(),
     );
 
+    // Pre-compute file hash synchronously for FileStart
+    let file_hash = match std::fs::read(&path) {
+        Ok(data) => *blake3::hash(&data).as_bytes(),
+        Err(e) => return DaemonResponse::Error(format!("cannot read file: {e}")),
+    };
+
+    // Enqueue FileStart to peer via pending queue (before async blob import)
+    let file_start = aira_core::proto::PlainPayload::FileStart {
+        id: transfer_id,
+        name: file_name.clone(),
+        size: file_size,
+        hash: file_hash,
+    };
+    if let Ok(payload_bytes) = postcard::to_allocvec(&file_start) {
+        let cid = aira_storage::contact_id(to);
+        let _ = aira_storage::pending::enqueue(storage, cid, &payload_bytes);
+    }
+
     let bs = blob_store.clone();
     let tm = transfer_mgr.clone();
     tokio::spawn(async move {
@@ -890,7 +934,6 @@ fn handle_send_file(
                 tm.start_send(transfer_id, file_name, size, hash_bytes)
                     .await;
                 tm.update_progress(transfer_id, 0).await;
-                // TODO(M5): send FileStart to peer via encrypted channel
                 tm.update_progress(transfer_id, size).await;
                 tm.complete(transfer_id, path).await;
             }
