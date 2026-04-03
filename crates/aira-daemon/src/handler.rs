@@ -157,6 +157,11 @@ pub fn handle_request(
             handle_group_remove_member(storage, &group_id, &member)
         }
         DaemonRequest::LeaveGroup { group_id } => handle_leave_group(storage, &group_id),
+        DaemonRequest::AcceptGroupInvite {
+            group_id,
+            display_name,
+            invited_by,
+        } => handle_accept_group_invite(storage, seed, &group_id, &display_name, &invited_by),
 
         // ─── Pseudonym operations (SPEC.md §12.6) ───────────────────────
         DaemonRequest::GetPseudonyms => match aira_storage::pseudonyms::list(storage) {
@@ -262,6 +267,34 @@ fn pseudonym_to_resp(record: &aira_storage::PseudonymRecord) -> PseudonymResp {
     }
 }
 
+/// Serialize a `GroupControl` as `PlainPayload::GroupControl` and enqueue
+/// in pending queue for each recipient.
+///
+/// This is the distribution mechanism for group management messages.
+/// Messages are enqueued as plaintext postcard bytes — the network layer
+/// will encrypt them with the 1-on-1 ratchet session when delivering.
+fn enqueue_group_control(
+    storage: &aira_storage::Storage,
+    control: &aira_core::group_proto::GroupControl,
+    recipients: &[Vec<u8>],
+) {
+    let payload = aira_core::proto::PlainPayload::GroupControl(control.clone());
+    let payload_bytes = match postcard::to_allocvec(&payload) {
+        Ok(b) => b,
+        Err(e) => {
+            tracing::error!("failed to serialize GroupControl: {e}");
+            return;
+        }
+    };
+
+    for recipient_pubkey in recipients {
+        let cid = aira_storage::contact_id(recipient_pubkey);
+        if let Err(e) = aira_storage::pending::enqueue(storage, cid, &payload_bytes) {
+            tracing::error!("failed to enqueue GroupControl for contact: {e}");
+        }
+    }
+}
+
 /// Derive a pseudonym ML-DSA public key for a given counter.
 ///
 /// Allocates the next counter from storage, derives the keypair, stores
@@ -352,7 +385,22 @@ fn handle_create_group(
 
     match aira_storage::groups::create_group(storage, &group) {
         Ok(()) => {
-            // TODO: distribute GroupControl::CreateGroup + Sender Keys to members via 1-on-1
+            // Distribute CreateGroup to all members via 1-on-1 pending queue
+            let all_member_pubkeys: Vec<Vec<u8>> = group
+                .members
+                .iter()
+                .filter(|m| m.pubkey != group.created_by)
+                .map(|m| m.pubkey.clone())
+                .collect();
+
+            let control = aira_core::group_proto::GroupControl::CreateGroup {
+                group_id,
+                name: name.to_string(),
+                members: group.members.iter().map(|m| m.pubkey.clone()).collect(),
+                creator_sender_key: vec![], // TODO: generate SenderKey when Sender Key layer is wired
+            };
+            enqueue_group_control(storage, &control, &all_member_pubkeys);
+
             DaemonResponse::GroupCreated { group_id }
         }
         Err(e) => DaemonResponse::Error(e.to_string()),
@@ -365,9 +413,9 @@ fn handle_send_group_message(
     group_id: &[u8; 32],
     text: &str,
 ) -> DaemonResponse {
-    if aira_storage::groups::get_group(storage, group_id).is_err() {
+    let Ok(group) = aira_storage::groups::get_group(storage, group_id) else {
         return DaemonResponse::Error("group not found".into());
-    }
+    };
 
     let msg = aira_storage::StoredMessage {
         id: rand_id(),
@@ -381,7 +429,17 @@ fn handle_send_group_message(
 
     match aira_storage::groups::store_group_message(storage, group_id, &msg) {
         Ok(()) => {
-            // TODO: encrypt with SenderKey and fan-out to all members via 1-on-1
+            // Fan-out plaintext payload to all members via pending queue.
+            // Network layer will encrypt with SenderKey when delivering.
+            let payload = aira_core::proto::PlainPayload::Text(text.to_string());
+            if let Ok(payload_bytes) = postcard::to_allocvec(&payload) {
+                let recipients: Vec<Vec<u8>> =
+                    group.members.iter().map(|m| m.pubkey.clone()).collect();
+                for pk in &recipients {
+                    let cid = aira_storage::contact_id(pk);
+                    let _ = aira_storage::pending::enqueue(storage, cid, &payload_bytes);
+                }
+            }
             DaemonResponse::Ok
         }
         Err(e) => DaemonResponse::Error(e.to_string()),
@@ -406,8 +464,6 @@ fn handle_group_add_member(
         ));
     }
 
-    // TODO: verify caller is Admin (requires identity integration)
-
     let now = now_secs();
     let member = aira_storage::GroupMemberInfo {
         pubkey: member_pubkey.to_vec(),
@@ -418,7 +474,15 @@ fn handle_group_add_member(
 
     match aira_storage::groups::add_member(storage, group_id, member) {
         Ok(()) => {
-            // TODO: distribute Sender Keys to new member, notify group
+            // Notify all existing members about the new member
+            let control = aira_core::group_proto::GroupControl::AddMember {
+                group_id: *group_id,
+                new_member: member_pubkey.to_vec(),
+                sender_keys: vec![], // TODO: distribute actual SenderKeys when Sender Key layer is wired
+            };
+            let recipients: Vec<Vec<u8>> = group.members.iter().map(|m| m.pubkey.clone()).collect();
+            enqueue_group_control(storage, &control, &recipients);
+
             DaemonResponse::Ok
         }
         Err(e) => DaemonResponse::Error(e.to_string()),
@@ -431,10 +495,21 @@ fn handle_group_remove_member(
     group_id: &[u8; 32],
     member_pubkey: &[u8],
 ) -> DaemonResponse {
-    // TODO: verify caller is Admin
+    let group = match aira_storage::groups::get_group(storage, group_id) {
+        Ok(g) => g,
+        Err(e) => return DaemonResponse::Error(e.to_string()),
+    };
+
     match aira_storage::groups::remove_member(storage, group_id, member_pubkey) {
         Ok(()) => {
-            // TODO: distribute RemoveMember + trigger SenderKey rotation
+            // Notify all remaining members (including the removed one)
+            let control = aira_core::group_proto::GroupControl::RemoveMember {
+                group_id: *group_id,
+                removed: member_pubkey.to_vec(),
+            };
+            let recipients: Vec<Vec<u8>> = group.members.iter().map(|m| m.pubkey.clone()).collect();
+            enqueue_group_control(storage, &control, &recipients);
+
             DaemonResponse::Ok
         }
         Err(e) => DaemonResponse::Error(e.to_string()),
@@ -443,11 +518,54 @@ fn handle_group_remove_member(
 
 /// Handle `LeaveGroup` request.
 fn handle_leave_group(storage: &aira_storage::Storage, group_id: &[u8; 32]) -> DaemonResponse {
-    // TODO: send GroupControl::Leave to all members, remove our sender key
+    // Get group members before removing so we can notify them
+    let members: Vec<Vec<u8>> = aira_storage::groups::get_group(storage, group_id)
+        .map(|g| g.members.iter().map(|m| m.pubkey.clone()).collect())
+        .unwrap_or_default();
+
     match aira_storage::groups::remove_group(storage, group_id) {
-        Ok(()) => DaemonResponse::Ok,
+        Ok(()) => {
+            // Notify all members that we left
+            let control = aira_core::group_proto::GroupControl::Leave {
+                group_id: *group_id,
+            };
+            enqueue_group_control(storage, &control, &members);
+
+            DaemonResponse::Ok
+        }
         Err(e) => DaemonResponse::Error(e.to_string()),
     }
+}
+
+/// Handle `AcceptGroupInvite` — invitee derives pseudonym and enqueues response (§12.6).
+fn handle_accept_group_invite(
+    storage: &aira_storage::Storage,
+    seed: &MasterSeed,
+    group_id: &[u8; 32],
+    display_name: &str,
+    invited_by: &[u8],
+) -> DaemonResponse {
+    // Derive our pseudonym for this group
+    let our_pubkey = match derive_pseudonym_pubkey(
+        storage,
+        seed,
+        aira_storage::types::PseudonymContext::Group,
+        *group_id,
+        display_name,
+    ) {
+        Ok((_counter, pk)) => pk,
+        Err(e) => return DaemonResponse::Error(format!("pseudonym derivation failed: {e}")),
+    };
+
+    // Send our pseudonym pubkey to the admin via SenderKeyUpdate
+    // (admin will use it to update the group member list)
+    let control = aira_core::group_proto::GroupControl::SenderKeyUpdate {
+        group_id: *group_id,
+        new_key: our_pubkey.clone(),
+    };
+    enqueue_group_control(storage, &control, &[invited_by.to_vec()]);
+
+    DaemonResponse::MyAddress(our_pubkey)
 }
 
 /// Handle `SetTransportMode` request.

@@ -128,6 +128,15 @@ pub enum DaemonRequest {
         /// Group ID (32 bytes).
         group_id: [u8; 32],
     },
+    /// Accept a group invitation — derives pseudonym and enqueues response (§12.6).
+    AcceptGroupInvite {
+        /// Group ID (32 bytes).
+        group_id: [u8; 32],
+        /// User-chosen display name for this group.
+        display_name: String,
+        /// Admin's pseudonym pubkey who invited us (for 1-on-1 response).
+        invited_by: Vec<u8>,
+    },
 
     // ─── Pseudonym operations (SPEC.md §12.6) ───────────────────────────
     /// Get all pseudonym records.
