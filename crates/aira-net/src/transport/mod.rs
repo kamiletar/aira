@@ -400,8 +400,9 @@ pub trait AiraTransport: Send + Sync + fmt::Debug {
 /// Passing `None` is fine for transports that don't need secrets.
 pub fn create_transport(
     mode: &TransportMode,
-    #[cfg_attr(not(feature = "reality"), allow(unused_variables))]
-    secrets: Option<&TransportSecrets>,
+    #[cfg_attr(not(feature = "reality"), allow(unused_variables))] secrets: Option<
+        &TransportSecrets,
+    >,
 ) -> Result<Arc<dyn AiraTransport>, TransportError> {
     match mode {
         TransportMode::Direct => Ok(Arc::new(direct::DirectTransport)),

@@ -13,19 +13,13 @@ pub fn identity_view(ui: &mut Ui, state: &mut GuiState) -> Option<GuiCommand> {
     let mut command = None;
 
     ui.vertical(|ui| {
-        ui.horizontal(|ui| {
-            if ui.button("<").on_hover_text("Back").clicked() {
-                state.go_back();
-            }
-            ui.add_space(8.0);
-            ui.label(
-                RichText::new("Identity")
-                    .size(theme::FONT_HEADING)
-                    .color(theme::TEXT_PRIMARY)
-                    .strong(),
-            );
-        });
-        ui.separator();
+        ui.add_space(4.0);
+        ui.label(
+            RichText::new("Identity")
+                .size(theme::FONT_HEADING)
+                .color(theme::TEXT_PRIMARY)
+                .strong(),
+        );
         ui.add_space(theme::PANEL_PADDING);
 
         // My Address

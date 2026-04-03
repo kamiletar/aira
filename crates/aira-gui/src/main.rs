@@ -34,6 +34,18 @@ mod widgets;
 
 use tokio::sync::mpsc;
 
+/// Load the app icon from the embedded PNG asset.
+fn load_app_icon() -> Option<egui::IconData> {
+    let png_bytes = include_bytes!("../assets/icon.png");
+    let img = image::load_from_memory(png_bytes).ok()?.into_rgba8();
+    let (w, h) = img.dimensions();
+    Some(egui::IconData {
+        rgba: img.into_raw(),
+        width: w,
+        height: h,
+    })
+}
+
 fn main() -> eframe::Result<()> {
     // Initialize logging
     tracing_subscriber::fmt()
@@ -57,12 +69,19 @@ fn main() -> eframe::Result<()> {
     let (cmd_tx, cmd_rx) = mpsc::channel::<ipc::GuiCommand>(64);
     let (update_tx, update_rx) = mpsc::channel::<ipc::GuiUpdate>(256);
 
+    // Load app icon from embedded PNG
+    let icon = load_app_icon();
+
     // eframe options
+    let mut viewport = egui::ViewportBuilder::default()
+        .with_inner_size([440.0, 660.0])
+        .with_min_inner_size([340.0, 500.0])
+        .with_title("Aira");
+    if let Some(icon_data) = icon {
+        viewport = viewport.with_icon(icon_data);
+    }
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_inner_size([420.0, 640.0])
-            .with_min_inner_size([320.0, 480.0])
-            .with_title("Aira"),
+        viewport,
         ..Default::default()
     };
 

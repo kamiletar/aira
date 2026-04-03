@@ -16,18 +16,13 @@ pub fn settings_view(ui: &mut Ui, state: &mut GuiState) -> Vec<GuiCommand> {
     let mut commands = Vec::new();
 
     ui.vertical(|ui| {
-        ui.horizontal(|ui| {
-            if ui.button("<").on_hover_text("Back").clicked() {
-                state.go_back();
-            }
-            ui.add_space(8.0);
-            ui.label(
-                RichText::new("Settings")
-                    .size(theme::FONT_HEADING)
-                    .color(theme::TEXT_PRIMARY)
-                    .strong(),
-            );
-        });
+        ui.add_space(4.0);
+        ui.label(
+            RichText::new("Settings")
+                .size(theme::FONT_HEADING)
+                .color(theme::TEXT_PRIMARY)
+                .strong(),
+        );
         ui.separator();
 
         ScrollArea::vertical().show(ui, |ui| {

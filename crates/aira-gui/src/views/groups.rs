@@ -14,19 +14,14 @@ pub fn groups_view(ui: &mut Ui, state: &mut GuiState) -> Vec<GuiCommand> {
     let mut commands = Vec::new();
 
     ui.vertical(|ui| {
-        ui.horizontal(|ui| {
-            if ui.button("<").on_hover_text("Back").clicked() {
-                state.go_back();
-            }
-            ui.add_space(8.0);
-            ui.label(
-                RichText::new("Groups")
-                    .size(theme::FONT_HEADING)
-                    .color(theme::TEXT_PRIMARY)
-                    .strong(),
-            );
-        });
-        ui.separator();
+        ui.add_space(4.0);
+        ui.label(
+            RichText::new("Groups")
+                .size(theme::FONT_HEADING)
+                .color(theme::TEXT_PRIMARY)
+                .strong(),
+        );
+        ui.add_space(6.0);
 
         ScrollArea::vertical().show(ui, |ui| {
             // Group list
@@ -82,6 +77,23 @@ pub fn groups_view(ui: &mut Ui, state: &mut GuiState) -> Vec<GuiCommand> {
                     });
                 }
                 ui.add_space(theme::ITEM_GAP);
+            }
+
+            if groups.is_empty() {
+                ui.add_space(40.0);
+                ui.vertical_centered(|ui| {
+                    ui.label(
+                        RichText::new("No groups yet")
+                            .size(theme::FONT_HEADING)
+                            .color(theme::TEXT_MUTED),
+                    );
+                    ui.add_space(4.0);
+                    ui.label(
+                        RichText::new("Create one below to start chatting")
+                            .size(theme::FONT_BODY)
+                            .color(theme::TEXT_MUTED),
+                    );
+                });
             }
 
             // Create group section

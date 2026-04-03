@@ -25,6 +25,8 @@ pub struct AiraApp {
     tray_ids: Option<TrayMenuIds>,
     /// Whether initial data has been fetched.
     init_fetched: bool,
+    /// Whether fonts have been set up.
+    fonts_loaded: bool,
 }
 
 impl AiraApp {
@@ -40,6 +42,7 @@ impl AiraApp {
             update_rx,
             tray_ids,
             init_fetched: false,
+            fonts_loaded: false,
         }
     }
 
@@ -97,37 +100,101 @@ impl eframe::App for AiraApp {
             }
         }
 
-        // 4. Apply dark theme
-        ctx.set_visuals(egui::Visuals::dark());
+        // 4. Apply custom theme + fonts (once)
+        if !self.fonts_loaded {
+            theme::setup_fonts(ctx);
+            self.fonts_loaded = true;
+        }
+        theme::apply_theme(ctx);
 
-        // 5. Render UI
-        // Top bar with navigation
-        egui::TopBottomPanel::top("top_bar").show(ctx, |ui| {
-            ui.horizontal(|ui| {
-                ui.selectable_value(&mut self.state.active_view, View::Contacts, "Contacts");
-                ui.selectable_value(&mut self.state.active_view, View::Groups, "Groups");
-                ui.selectable_value(&mut self.state.active_view, View::Transfers, "Transfers");
-                ui.selectable_value(&mut self.state.active_view, View::Identity, "Identity");
-                ui.selectable_value(&mut self.state.active_view, View::Settings, "Settings");
+        // 5. Render UI — top navigation bar
+        egui::TopBottomPanel::top("top_bar")
+            .frame(
+                egui::Frame::none()
+                    .fill(theme::BG_SECONDARY)
+                    .inner_margin(egui::Margin::symmetric(theme::PANEL_PADDING, 10.0))
+                    .stroke(egui::Stroke::new(1.0, theme::SEPARATOR)),
+            )
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 6.0;
+                    ui.spacing_mut().button_padding = egui::vec2(10.0, 6.0);
 
-                // Connection status indicator
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if self.state.connected {
-                        ui.label(
-                            egui::RichText::new("Connected")
-                                .size(theme::FONT_SMALL)
-                                .color(theme::SUCCESS),
+                    let tabs = [
+                        (View::Contacts, "Contacts"),
+                        (View::Groups, "Groups"),
+                        (View::Transfers, "Transfers"),
+                        (View::Identity, "Identity"),
+                        (View::Settings, "Settings"),
+                    ];
+
+                    for (view, label) in tabs {
+                        let is_active = self.state.active_view == view;
+                        let text =
+                            egui::RichText::new(label)
+                                .size(theme::FONT_BODY)
+                                .color(if is_active {
+                                    theme::ACCENT
+                                } else {
+                                    theme::TEXT_SECONDARY
+                                });
+
+                        let btn = ui.add(
+                            egui::Button::new(text)
+                                .frame(false)
+                                .min_size(egui::vec2(0.0, 28.0))
+                                .rounding(egui::Rounding::same(6.0)),
                         );
-                    } else {
-                        ui.label(
-                            egui::RichText::new("Disconnected")
-                                .size(theme::FONT_SMALL)
-                                .color(theme::DANGER),
-                        );
+
+                        // Hover highlight
+                        if btn.hovered() && !is_active {
+                            ui.painter().rect_filled(
+                                btn.rect.expand(1.0),
+                                6.0,
+                                egui::Color32::from_white_alpha(8),
+                            );
+                        }
+
+                        // Underline indicator for active tab
+                        if is_active {
+                            let rect = btn.rect;
+                            ui.painter().rect_filled(
+                                egui::Rect::from_min_size(
+                                    egui::pos2(rect.min.x + 2.0, rect.max.y + 4.0),
+                                    egui::vec2(rect.width() - 4.0, 2.0),
+                                ),
+                                1.0,
+                                theme::ACCENT,
+                            );
+                        }
+
+                        if btn.clicked() {
+                            self.state.active_view = view;
+                        }
                     }
+
+                    // Connection status — compact dot + label
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let (color, status_label) = if self.state.connected {
+                            (theme::SUCCESS, "Online")
+                        } else {
+                            (theme::DANGER, "Offline")
+                        };
+                        ui.label(
+                            egui::RichText::new(status_label)
+                                .size(theme::FONT_SMALL)
+                                .color(color),
+                        );
+                        let dot_size = 7.0;
+                        let (rect, _) = ui.allocate_exact_size(
+                            egui::vec2(dot_size, dot_size),
+                            egui::Sense::hover(),
+                        );
+                        ui.painter()
+                            .circle_filled(rect.center(), dot_size / 2.0, color);
+                    });
                 });
             });
-        });
 
         // Status bar at the bottom
         if self.state.status_message.is_some() {

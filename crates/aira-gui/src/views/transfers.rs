@@ -8,29 +8,32 @@ use crate::theme;
 /// Render the file transfers view.
 pub fn transfers_view(ui: &mut Ui, state: &mut GuiState) {
     ui.vertical(|ui| {
-        ui.horizontal(|ui| {
-            if ui.button("<").on_hover_text("Back").clicked() {
-                state.go_back();
-            }
-            ui.add_space(8.0);
-            ui.label(
-                RichText::new("File Transfers")
-                    .size(theme::FONT_HEADING)
-                    .color(theme::TEXT_PRIMARY)
-                    .strong(),
-            );
-        });
-        ui.separator();
+        ui.add_space(4.0);
+        ui.label(
+            RichText::new("File Transfers")
+                .size(theme::FONT_HEADING)
+                .color(theme::TEXT_PRIMARY)
+                .strong(),
+        );
+        ui.add_space(6.0);
 
         ScrollArea::vertical().show(ui, |ui| {
             // Active transfers
             if state.transfers.is_empty() && state.completed_files.is_empty() {
-                ui.add_space(theme::PANEL_PADDING);
-                ui.label(
-                    RichText::new("No file transfers")
-                        .size(theme::FONT_BODY)
-                        .color(theme::TEXT_MUTED),
-                );
+                ui.add_space(ui.available_height() / 3.0);
+                ui.vertical_centered(|ui| {
+                    ui.label(
+                        RichText::new("No file transfers")
+                            .size(theme::FONT_HEADING)
+                            .color(theme::TEXT_MUTED),
+                    );
+                    ui.add_space(4.0);
+                    ui.label(
+                        RichText::new("Send a file in a chat to start")
+                            .size(theme::FONT_BODY)
+                            .color(theme::TEXT_MUTED),
+                    );
+                });
                 return;
             }
 
