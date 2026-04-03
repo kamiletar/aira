@@ -73,6 +73,18 @@
 |----------|-----------|-------|
 | `aira/relay/mailbox/v1` | Pairwise mailbox ID derivation | aira-net/relay |
 
+## Pseudonym Keys (Unlinkable Identity, BIP-32 style)
+
+> Per-context pseudonym keypairs (§12.6). Counter — монотонный u32 (hardened
+> derivation). Mapping counter→context хранится в storage. Counter не содержит
+> group_id/contact_id — при компрометации seed перебор невозможен.
+
+| Контекст | Назначение | Крейт |
+|----------|-----------|-------|
+| `aira/pseudonym/<counter>/signing` | Per-context ML-DSA-65 signing key | aira-core/seed |
+| `aira/pseudonym/<counter>/x25519` | Per-context X25519 DH key | aira-core/seed |
+| `aira/pseudonym/<counter>/mlkem` | Per-context ML-KEM-768 KEM key (input to kem_keygen) | aira-core/seed |
+
 ## Transport Layer (DPI Resistance)
 
 | Контекст | Назначение | Крейт |

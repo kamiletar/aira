@@ -42,22 +42,31 @@ handshake (п. 4.5).
 
 **Форматы обмена ключами (от простого к сложному):**
 
-1. **QR-код** — сканирование камерой при встрече. ML-DSA pubkey (1952 байт)
-   помещается в QR Version 40 (binary mode, 2953 байт capacity), но
-   QR будет очень плотным. Рекомендуется: QR содержит ссылку, не сам ключ.
+> **Per-contact pseudonyms (§12.6):** каждый invitation link содержит
+> уникальный **pseudonym pubkey**, деривированный из MasterSeed через
+> монотонный counter (BIP-32 модель). Получатель видит только pseudonym —
+> невозможно связать два invitation link одного пользователя.
+>
+> При каждом вызове `/mykey` деривируется **новый** pseudonym keypair.
+> Ранее выданные invitation links остаются валидными.
 
-2. **Invitation link** — `aira://add/<base64url(pubkey)>#<short_fingerprint>`
+1. **QR-код** — сканирование камерой при встрече. ML-DSA pseudonym pubkey
+   (1952 байт) помещается в QR Version 40 (binary mode, 2953 байт capacity),
+   но QR будет очень плотным. Рекомендуется: QR содержит ссылку, не сам ключ.
+
+2. **Invitation link** — `aira://add/<base64url(pseudonym_pubkey)>#<short_fingerprint>`
    Копируется через буфер обмена, мессенджер, email. Длина ~2,600 символов.
    При открытии — Aira отображает fingerprint для верификации.
+   **Каждый вызов генерирует новый pseudonym** — два link'а нелинкуемы.
 
 3. **Short fingerprint** — для устной верификации:
-   `BLAKE3(pubkey)[..8]` → 16 hex символов (например, `a7f3-b2c1-e4d5-9f0a`).
+   `BLAKE3(pseudonym_pubkey)[..8]` → 16 hex символов (например, `a7f3-b2c1-e4d5-9f0a`).
    НЕ используется для добавления (коллизии!), только для подтверждения
    что обе стороны видят один ключ.
 
 4. **Relay-assisted exchange** — Alice публикует одноразовый Contact Request
    на relay, Bob получает ссылку `aira://relay/<relay_id>/<one_time_token>`.
-   Relay хранит зашифрованный pubkey + handshake init (TTL: 24 часа).
+   Relay хранит зашифрованный pseudonym pubkey + handshake init (TTL: 24 часа).
 
 ```
 CLI:

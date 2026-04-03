@@ -203,6 +203,188 @@ Timeout (участник не ответил N часов):
 - Bob офлайн при удалении → получает `RemoveMember` при reconnect,
   знает что удалён, не может писать в группу
 
+### 12.6 Per-Group Pseudonyms (Unlinkable Identity)
+
+> Аналогия: Bitcoin HD wallets (BIP-32) — из одного seed деривируются
+> неограниченно много несвязанных адресов. Тот же принцип для идентичности.
+>
+> Ссылки: [Lattice HD Wallets (ML-DSA)](https://eprint.iacr.org/2026/380),
+> [MIMI Metadata Minimalization](https://datatracker.ietf.org/doc/html/draft-kohbrok-mimi-metadata-minimalization-02),
+> [BIP-32](https://en.bitcoin.it/wiki/BIP_0032)
+
+**Проблема:** один ML-DSA-65 публичный ключ (`aira/identity/0`) используется
+как идентификатор везде. Наблюдатель, видящий участника в двух группах,
+тривиально связывает идентичности по совпадающему `from: PubKey`.
+
+**Решение: per-context pseudonym keys.** Каждая группа и каждый контакт
+получает уникальную ключевую пару (ML-DSA-65 + X25519 + ML-KEM-768),
+деривированную из MasterSeed через монотонный counter.
+
+#### 12.6.1 Деривация (BIP-32 модель)
+
+```
+MasterSeed (32 bytes)
+  ├── aira/pseudonym/0/signing   → ML-DSA-65 keypair (контакт Alice)
+  ├── aira/pseudonym/0/x25519    → X25519 keypair
+  ├── aira/pseudonym/0/mlkem     → ML-KEM-768 keypair
+  ├── aira/pseudonym/1/signing   → ML-DSA-65 keypair (группа "Work")
+  ├── aira/pseudonym/1/x25519    → X25519 keypair
+  ├── aira/pseudonym/1/mlkem     → ML-KEM-768 keypair
+  ├── aira/pseudonym/2/signing   → ML-DSA-65 keypair (контакт Bob)
+  └── ...
+```
+
+- `<counter>` — монотонно возрастающий u32 (hardened derivation)
+- Counter не несёт семантики: mapping counter→context хранится в storage
+- Один counter = один контекст (группа или контакт)
+- Ротация pseudonym = counter++ (новый keypair для того же контекста)
+
+**Почему counter, а не scope-based (BLAKE3(seed, group_id)):**
+
+- Scope-based встраивает `group_id` в KDF-контекст → при компрометации seed
+  атакующий перебирает известные group_id и проверяет принадлежность
+  pseudonym к конкретной группе
+- Scope-based не позволяет ротацию pseudonym без смены группы
+- Для контактов нет "contact_id" до первого обмена ключами
+- Counter — проверенная модель (BIP-32, 13 лет в production у Bitcoin)
+
+#### 12.6.2 UX-флоу при создании группы
+
+```
+Admin создаёт группу "Project Alpha":
+  1. UI запрашивает: "Выберите псевдоним для группы «Project Alpha»"
+  2. Admin вводит display name (например, "Alex")
+  3. Daemon инкрементирует counter, деривирует новый pseudonym keypair
+  4. GroupMember.pseudonym_pubkey = новый ML-DSA pubkey
+  5. GroupMember.display_name = "Alex"
+```
+
+#### 12.6.3 UX-флоу при добавлении в группу
+
+```
+Alice добавляют в группу "Work Chat":
+  1. Alice получает AddMember invite через 1-на-1 канал с Admin
+  2. UI запрашивает: "Вас пригласили в группу «Work Chat».
+     Выберите псевдоним для этой группы:"
+  3. Alice вводит display name
+  4. Daemon деривирует новый pseudonym keypair (counter++)
+  5. Alice отправляет свой pseudonym pubkey Admin'у через 1-на-1 канал
+  6. Admin рассылает pseudonym pubkey Alice всем участникам
+```
+
+#### 12.6.4 Изменения в структурах данных
+
+```rust
+pub struct GroupMember {
+    pub pseudonym_pubkey: PubKey,  // per-group ML-DSA pseudonym (NOT identity key)
+    pub display_name: String,      // user-chosen name for this group
+    pub sender_key: SenderKeyState,
+    pub role: GroupRole,
+    pub joined_at: u64,
+}
+
+pub struct GroupMessage {
+    pub group_id: [u8; 32],
+    pub from: PubKey,              // pseudonym pubkey (NOT identity key)
+    pub payload: PlainPayload,
+    pub id: [u8; 16],
+    pub parent_id: Option<[u8; 16]>,
+    pub timestamp: u64,
+}
+```
+
+- `GroupMessage.from` → pseudonym pubkey (не identity pubkey)
+- Sender Key distribution шифруется для pseudonym pubkey участника
+- `AddMember.new_member` → pseudonym pubkey нового участника
+
+#### 12.6.5 Обмен контактами с pseudonyms
+
+При обмене контактами каждый invitation link содержит **уникальный
+pseudonym pubkey**, а не identity key:
+
+```
+Было:  aira://add/<base64url(identity_pubkey)>#<fingerprint>
+Стало: aira://add/<base64url(pseudonym_pubkey)>#<fingerprint>
+```
+
+- Каждый контакт видит уникальный pubkey пользователя
+- Невозможно связать два invitation link одного пользователя
+- QR-код тоже содержит pseudonym pubkey
+- ContactRequest.from = pseudonym pubkey
+
+#### 12.6.6 Раскрытие связи — PseudonymLink (опционально)
+
+Пользователь может **по желанию** раскрыть доверенному контакту,
+что два его pseudonym — это один человек:
+
+```rust
+pub struct PseudonymLink {
+    pub pseudonym_a: PubKey,
+    pub pseudonym_b: PubKey,
+    /// Cross-signature: подписано ключом pseudonym_a
+    pub sig_a: MlDsaSignature,
+    /// Cross-signature: подписано ключом pseudonym_b
+    pub sig_b: MlDsaSignature,
+}
+```
+
+- Отправляется через 1-на-1 E2E канал
+- Полностью опционально — пользователь решает, кому раскрывать
+- Верификация: проверить обе подписи над каноническим `(pseudonym_a, pseudonym_b)`
+
+#### 12.6.7 Ротация pseudonym в группе
+
+Пользователь может сменить pseudonym в группе (новый display name +
+новый keypair):
+
+```
+Alice ротирует pseudonym в группе "Work Chat":
+  1. Daemon деривирует новый pseudonym keypair (counter++)
+  2. Alice подписывает PseudonymRotation { old_pubkey, new_pubkey }
+     старым ключом
+  3. Alice отправляет PseudonymRotation + SenderKeyUpdate через
+     1-на-1 каналы ко всем участникам
+  4. Участники обновляют GroupMember для Alice
+```
+
+#### 12.6.8 Storage
+
+```
+Таблица pseudonyms:
+  counter (u32) → {
+    pseudonym_pubkey: PubKey,
+    context_type: "contact" | "group",
+    context_id: [u8; 32],  // group_id или BLAKE3(contact_pseudonym_pubkey)
+    display_name: String,
+    created_at: u64,
+  }
+
+Таблица pseudonym_counter:
+  "current" → u32  // текущий максимальный counter
+```
+
+#### 12.6.9 Модель угроз
+
+| Угроза | Защита |
+|--------|--------|
+| Кросс-групповая корреляция участника | Разные pseudonym keys в каждой группе |
+| Корреляция через invitation links | Каждый link — уникальный pseudonym |
+| Утечка identity из group metadata | Identity pubkey нигде не фигурирует в группе |
+| Компрометация одного pseudonym | Не раскрывает другие (KDF isolation, разные counters) |
+| Компрометация seed + перебор group_id | Counter не содержит group_id → перебор бесполезен |
+
+#### 12.6.10 Safety Numbers с pseudonyms
+
+Safety Number (§6.9) вычисляется по **pseudonym pubkey**, не по identity key:
+
+```
+safety_number(alice_pseudonym_pubkey, bob_pseudonym_pubkey, version)
+```
+
+Каждая пара контактов имеет уникальный Safety Number, привязанный
+к конкретным pseudonyms. При ротации pseudonym — Safety Number меняется,
+контакт получает уведомление.
+
 ---
 
 ## 13. Защита от спама
@@ -241,11 +423,11 @@ Alice хочет написать Bob:
 // aira-core/src/spam.rs
 
 pub struct ContactRequest {
-    pub from: PubKey,
-    pub message: String,          // ≤ 256 bytes
+    pub from: PubKey,              // pseudonym pubkey (§12.6), NOT identity key
+    pub message: String,           // ≤ 256 bytes
     pub pow_nonce: u64,
-    pub pow_difficulty: u8,       // required leading zero bits
-    pub signature: MlDsaSignature,
+    pub pow_difficulty: u8,        // required leading zero bits
+    pub signature: MlDsaSignature, // signed by pseudonym key
 }
 
 impl ContactRequest {
