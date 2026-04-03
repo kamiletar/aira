@@ -13,6 +13,8 @@
 //! - `settings` — app settings (key -> value)
 //! - `groups` — group chat metadata (`group_id` -> `GroupInfo`)
 //! - `group_messages` — group messages ((`group_id`, timestamp) -> `StoredMessage`)
+//! - `pseudonyms` — pseudonym records (`counter: u32` -> `PseudonymRecord`, §12.6)
+//! - `pseudonym_counter` — counter singleton (`"current"` -> `u32`)
 
 #![deny(unsafe_code)]
 #![warn(clippy::all, clippy::pedantic)]
@@ -34,9 +36,11 @@ pub mod sessions;
 pub mod settings;
 pub mod types;
 
+pub mod pseudonyms;
+
 pub use types::{
-    contact_id, ContactInfo, DeviceInfo, GroupInfo, GroupMemberInfo, GroupRole, StoredMessage,
-    SyncLogEntry,
+    contact_id, ContactInfo, DeviceInfo, GroupInfo, GroupMemberInfo, GroupRole, PseudonymRecord,
+    StoredMessage, SyncLogEntry,
 };
 
 // ─── Table definitions ──────────────────────────────────────────────────────
@@ -55,6 +59,10 @@ pub const GROUP_MESSAGES: TableDefinition<(&[u8], u64), &[u8]> =
 pub const DEVICES: TableDefinition<&[u8], &[u8]> = TableDefinition::new("devices");
 /// Sync log: `(device_id_hash: u64, timestamp: u64)` → encrypted `SyncLogEntry`.
 pub const SYNC_LOG: TableDefinition<(u64, u64), &[u8]> = TableDefinition::new("sync_log");
+/// Pseudonym key derivation records (§12.6): `counter: u32` → encrypted `PseudonymRecord`.
+pub const PSEUDONYMS: TableDefinition<u32, &[u8]> = TableDefinition::new("pseudonyms");
+/// Pseudonym counter singleton: `"current"` → `u32` (next counter to allocate).
+pub const PSEUDONYM_COUNTER: TableDefinition<&str, u32> = TableDefinition::new("pseudonym_counter");
 
 /// 24-hour dedup window for message IDs (SPEC.md §6.21).
 pub const DEDUP_WINDOW_SECS: u64 = 24 * 60 * 60;
@@ -135,6 +143,8 @@ impl Storage {
             let _t = txn.open_table(GROUP_MESSAGES)?;
             let _t = txn.open_table(DEVICES)?;
             let _t = txn.open_table(SYNC_LOG)?;
+            let _t = txn.open_table(PSEUDONYMS)?;
+            let _t = txn.open_table(PSEUDONYM_COUNTER)?;
         }
         txn.commit()?;
 

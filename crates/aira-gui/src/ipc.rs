@@ -296,6 +296,8 @@ fn response_to_update(cmd: &GuiCommand, resp: DaemonResponse) -> GuiUpdate {
             GuiUpdate::DeviceLinked { device_id, name }
         }
         DaemonResponse::Devices(devs) => GuiUpdate::DevicesLoaded(devs),
+        // Pseudonym responses (§12.6) — not yet consumed by GUI
+        DaemonResponse::Pseudonyms(_) | DaemonResponse::Pseudonym(_) => GuiUpdate::Ok,
         DaemonResponse::Ok => match cmd {
             GuiCommand::SendMessage { .. } | GuiCommand::SendGroupMessage { .. } => {
                 GuiUpdate::MessageSent

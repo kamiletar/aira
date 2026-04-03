@@ -121,6 +121,46 @@ pub enum GroupControl {
     },
 }
 
+// ─── Pseudonym management (§12.6) ─────────────────────────────────────────
+
+/// Voluntary disclosure of pseudonym linkage (§12.6.6).
+///
+/// Allows a user to prove to a trusted contact that two of their pseudonyms
+/// belong to the same identity. Sent over a 1-on-1 E2E channel.
+///
+/// Both signatures must verify over the canonical `(pseudonym_a, pseudonym_b)`
+/// byte sequence (sorted lexicographically).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PseudonymLink {
+    /// First pseudonym public key.
+    pub pseudonym_a: Vec<u8>,
+    /// Second pseudonym public key.
+    pub pseudonym_b: Vec<u8>,
+    /// ML-DSA signature by `pseudonym_a`'s signing key.
+    pub sig_a: Vec<u8>,
+    /// ML-DSA signature by `pseudonym_b`'s signing key.
+    pub sig_b: Vec<u8>,
+}
+
+/// Pseudonym rotation within a group (§12.6.7).
+///
+/// Sent to all group members via 1-on-1 channels when a member
+/// changes their pseudonym (new display name or key rotation).
+/// Must be accompanied by a [`GroupControl::SenderKeyUpdate`].
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PseudonymRotation {
+    /// Group identifier.
+    pub group_id: [u8; 32],
+    /// Old pseudonym public key (being replaced).
+    pub old_pubkey: Vec<u8>,
+    /// New pseudonym public key.
+    pub new_pubkey: Vec<u8>,
+    /// New display name (may be unchanged).
+    pub new_display_name: String,
+    /// ML-DSA signature by the old key over `(group_id, old_pubkey, new_pubkey)`.
+    pub signature: Vec<u8>,
+}
+
 // ─── Tests ──────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -213,6 +253,40 @@ mod tests {
             let bytes = postcard::to_allocvec(&ctrl).expect("serialize");
             let _restored: GroupControl = postcard::from_bytes(&bytes).expect("deserialize");
         }
+    }
+
+    #[test]
+    fn pseudonym_link_roundtrip() {
+        let link = PseudonymLink {
+            pseudonym_a: vec![0xAA; 1952],
+            pseudonym_b: vec![0xBB; 1952],
+            sig_a: vec![0x11; 3309],
+            sig_b: vec![0x22; 3309],
+        };
+        let bytes = postcard::to_allocvec(&link).expect("serialize");
+        let restored: PseudonymLink = postcard::from_bytes(&bytes).expect("deserialize");
+        assert_eq!(restored.pseudonym_a, vec![0xAA; 1952]);
+        assert_eq!(restored.pseudonym_b, vec![0xBB; 1952]);
+        assert_eq!(restored.sig_a.len(), 3309);
+        assert_eq!(restored.sig_b.len(), 3309);
+    }
+
+    #[test]
+    fn pseudonym_rotation_roundtrip() {
+        let rot = PseudonymRotation {
+            group_id: [0xFF; 32],
+            old_pubkey: vec![0xAA; 1952],
+            new_pubkey: vec![0xBB; 1952],
+            new_display_name: "New Name".into(),
+            signature: vec![0xCC; 3309],
+        };
+        let bytes = postcard::to_allocvec(&rot).expect("serialize");
+        let restored: PseudonymRotation = postcard::from_bytes(&bytes).expect("deserialize");
+        assert_eq!(restored.group_id, [0xFF; 32]);
+        assert_eq!(restored.old_pubkey, vec![0xAA; 1952]);
+        assert_eq!(restored.new_pubkey, vec![0xBB; 1952]);
+        assert_eq!(restored.new_display_name, "New Name");
+        assert_eq!(restored.signature.len(), 3309);
     }
 
     #[test]

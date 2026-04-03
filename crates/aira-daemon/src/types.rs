@@ -129,6 +129,20 @@ pub enum DaemonRequest {
         group_id: [u8; 32],
     },
 
+    // ─── Pseudonym operations (SPEC.md §12.6) ───────────────────────────
+    /// Get all pseudonym records.
+    GetPseudonyms,
+    /// Get a pseudonym record by its counter.
+    GetPseudonym {
+        /// Counter value.
+        counter: u32,
+    },
+    /// Find pseudonym for a specific context (group or contact).
+    FindPseudonym {
+        /// Context ID (`group_id` or contact hash).
+        context_id: [u8; 32],
+    },
+
     // ─── Device operations (SPEC.md §14) ────────────────────────────────
     /// Generate a one-time link code for pairing a new device.
     GenerateLinkCode,
@@ -178,6 +192,12 @@ pub enum DaemonResponse {
     /// Group message history.
     GroupHistory(Vec<aira_storage::StoredMessage>),
 
+    // ─── Pseudonym responses (§12.6) ────────────────────────────────────
+    /// List of all pseudonym records.
+    Pseudonyms(Vec<PseudonymResp>),
+    /// Single pseudonym record (or None).
+    Pseudonym(Option<PseudonymResp>),
+
     // ─── Device responses ───────────────────────────────────────────────
     /// Generated link code for device pairing.
     LinkCode(String),
@@ -218,6 +238,23 @@ pub struct GroupMemberResp {
     pub role: String,
     /// Unix timestamp (seconds) when joined.
     pub joined_at: u64,
+}
+
+/// Pseudonym record returned in daemon responses (§12.6).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PseudonymResp {
+    /// BIP-32-style counter.
+    pub counter: u32,
+    /// ML-DSA pseudonym public key.
+    pub pubkey: Vec<u8>,
+    /// "contact" or "group".
+    pub context_type: String,
+    /// Context identifier (`group_id` or contact hash).
+    pub context_id: [u8; 32],
+    /// User-chosen display name.
+    pub display_name: String,
+    /// Unix timestamp (seconds) when created.
+    pub created_at: u64,
 }
 
 /// Device information returned in daemon responses.

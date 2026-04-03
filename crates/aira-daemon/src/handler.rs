@@ -8,7 +8,9 @@
 
 use aira_core::util::{now_micros, now_secs, rand_id};
 
-use crate::types::{DaemonRequest, DaemonResponse, DeviceInfoResp, GroupInfoResp, GroupMemberResp};
+use crate::types::{
+    DaemonRequest, DaemonResponse, DeviceInfoResp, GroupInfoResp, GroupMemberResp, PseudonymResp,
+};
 use tokio::sync::mpsc;
 
 /// Storage key for persisted transport mode.
@@ -135,6 +137,27 @@ pub fn handle_request(
         }
         DaemonRequest::LeaveGroup { group_id } => handle_leave_group(storage, &group_id),
 
+        // ─── Pseudonym operations (SPEC.md §12.6) ───────────────────────
+        DaemonRequest::GetPseudonyms => match aira_storage::pseudonyms::list(storage) {
+            Ok(records) => {
+                let resp: Vec<_> = records.iter().map(pseudonym_to_resp).collect();
+                DaemonResponse::Pseudonyms(resp)
+            }
+            Err(e) => DaemonResponse::Error(e.to_string()),
+        },
+        DaemonRequest::GetPseudonym { counter } => {
+            match aira_storage::pseudonyms::get(storage, counter) {
+                Ok(record) => DaemonResponse::Pseudonym(record.as_ref().map(pseudonym_to_resp)),
+                Err(e) => DaemonResponse::Error(e.to_string()),
+            }
+        }
+        DaemonRequest::FindPseudonym { context_id } => {
+            match aira_storage::pseudonyms::find_by_context(storage, &context_id) {
+                Ok(record) => DaemonResponse::Pseudonym(record.as_ref().map(pseudonym_to_resp)),
+                Err(e) => DaemonResponse::Error(e.to_string()),
+            }
+        }
+
         // ─── Device operations (SPEC.md §14) ────────────────────────────
         DaemonRequest::GenerateLinkCode => {
             // TODO(M8): use actual seed; for now return placeholder
@@ -200,6 +223,21 @@ pub(crate) fn group_info_to_resp(group: &aira_storage::GroupInfo) -> GroupInfoRe
             .collect(),
         created_by: group.created_by.clone(),
         created_at: group.created_at,
+    }
+}
+
+/// Convert storage `PseudonymRecord` to daemon response `PseudonymResp`.
+fn pseudonym_to_resp(record: &aira_storage::PseudonymRecord) -> PseudonymResp {
+    PseudonymResp {
+        counter: record.counter,
+        pubkey: record.pubkey.clone(),
+        context_type: match record.context_type {
+            aira_storage::types::PseudonymContext::Contact => "contact".into(),
+            aira_storage::types::PseudonymContext::Group => "group".into(),
+        },
+        context_id: record.context_id,
+        display_name: record.display_name.clone(),
+        created_at: record.created_at,
     }
 }
 

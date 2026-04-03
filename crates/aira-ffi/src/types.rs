@@ -60,8 +60,10 @@ pub struct FfiGroupInfo {
 /// Group member information returned to Kotlin.
 #[derive(Debug, Clone, uniffi::Record)]
 pub struct FfiGroupMember {
-    /// Member's ML-DSA public key.
+    /// Member's pseudonym public key for this group (§12.6).
     pub pubkey: Vec<u8>,
+    /// User-chosen display name for this group (§12.6).
+    pub display_name: String,
     /// "admin" or "member".
     pub role: String,
     /// Unix timestamp (seconds) when joined.
@@ -141,6 +143,7 @@ impl From<aira_daemon::types::GroupInfoResp> for FfiGroupDetail {
                 .into_iter()
                 .map(|m| FfiGroupMember {
                     pubkey: m.pubkey,
+                    display_name: m.display_name,
                     role: m.role,
                     joined_at: m.joined_at,
                 })

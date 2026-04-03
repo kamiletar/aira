@@ -85,6 +85,39 @@ pub struct GroupInfo {
     pub created_at: u64,
 }
 
+/// Context type for a pseudonym record (§12.6).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PseudonymContext {
+    /// Pseudonym used for a 1-on-1 contact.
+    Contact,
+    /// Pseudonym used for a group.
+    Group,
+}
+
+/// A pseudonym key derivation record stored in the `pseudonyms` table (§12.6).
+///
+/// Key: `counter` (u32).
+/// Value: `PseudonymRecord` serialized with postcard, then encrypted.
+///
+/// Maps a BIP-32-style counter to its usage context (group or contact).
+/// The actual key material is derived from `MasterSeed` at runtime via
+/// `derive_pseudonym_seeds(counter)` — never stored.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PseudonymRecord {
+    /// Counter used for KDF derivation.
+    pub counter: u32,
+    /// ML-DSA-65 pseudonym public key (derived, stored for lookup).
+    pub pubkey: Vec<u8>,
+    /// Whether this pseudonym is for a contact or a group.
+    pub context_type: PseudonymContext,
+    /// Context identifier: `group_id` (32 bytes) or `BLAKE3(contact_pseudonym_pubkey)[..32]`.
+    pub context_id: [u8; 32],
+    /// User-chosen display name for this context.
+    pub display_name: String,
+    /// Unix timestamp (seconds) when the pseudonym was created.
+    pub created_at: u64,
+}
+
 /// Information about a linked device stored in the `devices` table.
 ///
 /// Key: `device_id` (32 bytes).
