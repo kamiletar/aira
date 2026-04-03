@@ -947,3 +947,615 @@ fn handle_send_file(
 
     DaemonResponse::Ok
 }
+
+// ─── Tests ──────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::sync::{broadcast, mpsc};
+
+    /// Fixed BIP-39 phrase for deterministic tests (Mobile Argon2 ~0.5s).
+    const TEST_PHRASE: &str = "abandon abandon abandon abandon abandon abandon abandon abandon \
+         abandon abandon abandon abandon abandon abandon abandon abandon \
+         abandon abandon abandon abandon abandon abandon abandon art";
+
+    fn test_seed() -> MasterSeed {
+        MasterSeed::from_phrase_with_platform(TEST_PHRASE, aira_core::seed::Platform::Mobile)
+            .expect("test phrase should be valid")
+    }
+
+    fn test_storage() -> aira_storage::Storage {
+        let dir = std::env::temp_dir().join(format!("aira-handler-test-{}", rand::random::<u64>()));
+        let key = zeroize::Zeroizing::new([0x42u8; 32]);
+        aira_storage::Storage::open(&dir, key).expect("open test storage")
+    }
+
+    fn test_event_tx() -> broadcast::Sender<crate::types::DaemonEvent> {
+        broadcast::channel(64).0
+    }
+
+    fn test_shutdown_tx() -> mpsc::Sender<()> {
+        mpsc::channel(1).0
+    }
+
+    // ─── Tier 1: Critical (new code) ─────────────────────────────────────
+
+    #[test]
+    fn derive_pseudonym_pubkey_allocates_counter_and_stores() {
+        let storage = test_storage();
+        let seed = test_seed();
+
+        let (counter, pubkey) = derive_pseudonym_pubkey(
+            &storage,
+            &seed,
+            aira_storage::types::PseudonymContext::Contact,
+            [0xAA; 32],
+            "Alice",
+        )
+        .expect("derive");
+
+        assert_eq!(counter, 0);
+        assert_eq!(pubkey.len(), 1952, "ML-DSA-65 pubkey is 1952 bytes");
+
+        // Stored in pseudonyms table
+        let record = aira_storage::pseudonyms::get(&storage, 0)
+            .expect("get")
+            .expect("record exists");
+        assert_eq!(record.pubkey, pubkey);
+        assert_eq!(record.display_name, "Alice");
+
+        // Next counter incremented
+        let (counter2, _) = derive_pseudonym_pubkey(
+            &storage,
+            &seed,
+            aira_storage::types::PseudonymContext::Group,
+            [0xBB; 32],
+            "Bob",
+        )
+        .expect("derive 2");
+        assert_eq!(counter2, 1);
+    }
+
+    #[tokio::test]
+    async fn handle_create_group_derives_pseudonym_and_enqueues() {
+        let storage = test_storage();
+        let seed = test_seed();
+        let blob_store = aira_net::blobs::BlobStore::new();
+        let event_tx = test_event_tx();
+        let tm = crate::transfers::TransferManager::new(event_tx.clone());
+        let shutdown_tx = test_shutdown_tx();
+
+        let resp = handle_request(
+            &storage,
+            &seed,
+            &blob_store,
+            &tm,
+            &shutdown_tx,
+            DaemonRequest::CreateGroup {
+                name: "Test Group".into(),
+                members: vec![vec![0xBB; 32]],
+            },
+        );
+
+        // Should return GroupCreated
+        let group_id = match resp {
+            DaemonResponse::GroupCreated { group_id } => group_id,
+            other => panic!("expected GroupCreated, got {other:?}"),
+        };
+
+        // Group should exist in storage
+        let group = aira_storage::groups::get_group(&storage, &group_id).expect("get group");
+        assert_eq!(group.name, "Test Group");
+        assert_eq!(group.members.len(), 2);
+
+        // Creator's pseudonym should be non-empty (derived)
+        let creator = &group.members[0];
+        assert!(
+            !creator.pubkey.is_empty(),
+            "creator pubkey should be derived"
+        );
+        assert_eq!(creator.pubkey.len(), 1952);
+        assert_eq!(creator.role, aira_storage::GroupRole::Admin);
+        assert_ne!(
+            creator.sender_chain_key, [0; 32],
+            "sender key should be generated"
+        );
+
+        // created_by matches creator's pseudonym
+        assert_eq!(group.created_by, creator.pubkey);
+
+        // Pseudonym stored in pseudonyms table
+        let pseudonym = aira_storage::pseudonyms::get(&storage, 0)
+            .expect("get pseudonym")
+            .expect("pseudonym exists");
+        assert_eq!(pseudonym.pubkey, creator.pubkey);
+
+        // GroupControl::CreateGroup enqueued for member 0xBB
+        let cid = aira_storage::contact_id(&[0xBB; 32]);
+        let pending = aira_storage::pending::peek(&storage, cid).expect("peek");
+        assert!(
+            pending.is_some(),
+            "CreateGroup should be enqueued for member"
+        );
+    }
+
+    #[test]
+    fn handle_incoming_group_control_create_stores_group() {
+        let storage = test_storage();
+        let seed = test_seed();
+        let event_tx = test_event_tx();
+        let mut event_rx = event_tx.subscribe();
+
+        let group_id = [0x42; 32];
+        let sender_pk = vec![0xAA; 32];
+        let my_pk = vec![0xBB; 32];
+        let chain_key = vec![0xCC; 32];
+
+        let control = aira_core::group_proto::GroupControl::CreateGroup {
+            group_id,
+            name: "Invited Group".into(),
+            members: vec![sender_pk.clone(), my_pk.clone()],
+            creator_sender_key: chain_key.clone(),
+        };
+
+        let result =
+            handle_incoming_group_control(&storage, &seed, &sender_pk, &control, &event_tx);
+        assert!(result.is_ok(), "should succeed: {result:?}");
+
+        // Group stored
+        let group = aira_storage::groups::get_group(&storage, &group_id).expect("get group");
+        assert_eq!(group.name, "Invited Group");
+        assert_eq!(group.members.len(), 2);
+
+        // Creator's chain key stored
+        let creator = group
+            .members
+            .iter()
+            .find(|m| m.pubkey == sender_pk)
+            .unwrap();
+        assert_eq!(creator.sender_chain_key[..32], chain_key[..32]);
+
+        // GroupInvite event emitted
+        let event = event_rx.try_recv().expect("should have event");
+        match event {
+            crate::types::DaemonEvent::GroupInvite {
+                group_id: gid,
+                name,
+                ..
+            } => {
+                assert_eq!(gid, group_id);
+                assert_eq!(name, "Invited Group");
+            }
+            other => panic!("expected GroupInvite, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn handle_incoming_group_control_add_member() {
+        let storage = test_storage();
+        let seed = test_seed();
+        let event_tx = test_event_tx();
+
+        // Create group first
+        let group_id = [0x11; 32];
+        let group = aira_storage::GroupInfo {
+            id: group_id,
+            name: "Test".into(),
+            members: vec![aira_storage::GroupMemberInfo {
+                pubkey: vec![0xAA; 32],
+                display_name: "Admin".into(),
+                role: aira_storage::GroupRole::Admin,
+                joined_at: 1000,
+                sender_chain_key: [0x11; 32],
+            }],
+            created_by: vec![0xAA; 32],
+            created_at: 1000,
+        };
+        aira_storage::groups::create_group(&storage, &group).unwrap();
+
+        let control = aira_core::group_proto::GroupControl::AddMember {
+            group_id,
+            new_member: vec![0xBB; 32],
+            sender_keys: vec![(vec![0xAA; 32], vec![0x22; 32])],
+        };
+
+        let result =
+            handle_incoming_group_control(&storage, &seed, &[0xAA; 32], &control, &event_tx);
+        assert!(result.is_ok());
+
+        let updated = aira_storage::groups::get_group(&storage, &group_id).unwrap();
+        assert_eq!(updated.members.len(), 2);
+
+        // Chain key updated for existing member
+        let admin = updated
+            .members
+            .iter()
+            .find(|m| m.pubkey == vec![0xAA; 32])
+            .unwrap();
+        assert_eq!(admin.sender_chain_key[..32], [0x22; 32]);
+    }
+
+    #[test]
+    fn handle_incoming_group_control_remove_member_triggers_rotation() {
+        let storage = test_storage();
+        let seed = test_seed();
+        let event_tx = test_event_tx();
+
+        let group_id = [0x22; 32];
+        let group = aira_storage::GroupInfo {
+            id: group_id,
+            name: "Test".into(),
+            members: vec![
+                aira_storage::GroupMemberInfo {
+                    pubkey: vec![0xAA; 32],
+                    display_name: "A".into(),
+                    role: aira_storage::GroupRole::Admin,
+                    joined_at: 1000,
+                    sender_chain_key: [0; 32],
+                },
+                aira_storage::GroupMemberInfo {
+                    pubkey: vec![0xBB; 32],
+                    display_name: "B".into(),
+                    role: aira_storage::GroupRole::Member,
+                    joined_at: 1000,
+                    sender_chain_key: [0; 32],
+                },
+            ],
+            created_by: vec![0xAA; 32],
+            created_at: 1000,
+        };
+        aira_storage::groups::create_group(&storage, &group).unwrap();
+
+        let control = aira_core::group_proto::GroupControl::RemoveMember {
+            group_id,
+            removed: vec![0xBB; 32],
+        };
+
+        let result =
+            handle_incoming_group_control(&storage, &seed, &[0xAA; 32], &control, &event_tx);
+        assert!(result.is_ok());
+
+        // BB removed
+        let updated = aira_storage::groups::get_group(&storage, &group_id).unwrap();
+        assert_eq!(updated.members.len(), 1);
+        assert_eq!(updated.members[0].pubkey, vec![0xAA; 32]);
+
+        // SenderKeyUpdate enqueued for remaining member AA (rotation)
+        let cid = aira_storage::contact_id(&[0xAA; 32]);
+        let pending = aira_storage::pending::peek(&storage, cid).unwrap();
+        assert!(
+            pending.is_some(),
+            "SenderKeyUpdate should be enqueued after removal"
+        );
+    }
+
+    #[test]
+    fn handle_incoming_group_control_sender_key_update() {
+        let storage = test_storage();
+        let seed = test_seed();
+        let event_tx = test_event_tx();
+
+        let group_id = [0x33; 32];
+        let group = aira_storage::GroupInfo {
+            id: group_id,
+            name: "Test".into(),
+            members: vec![aira_storage::GroupMemberInfo {
+                pubkey: vec![0xAA; 32],
+                display_name: "A".into(),
+                role: aira_storage::GroupRole::Admin,
+                joined_at: 1000,
+                sender_chain_key: [0; 32],
+            }],
+            created_by: vec![0xAA; 32],
+            created_at: 1000,
+        };
+        aira_storage::groups::create_group(&storage, &group).unwrap();
+
+        let new_chain = vec![0xFF; 32];
+        let control = aira_core::group_proto::GroupControl::SenderKeyUpdate {
+            group_id,
+            new_key: new_chain.clone(),
+        };
+
+        let result =
+            handle_incoming_group_control(&storage, &seed, &[0xAA; 32], &control, &event_tx);
+        assert!(result.is_ok());
+
+        let updated = aira_storage::groups::get_group(&storage, &group_id).unwrap();
+        assert_eq!(updated.members[0].sender_chain_key, [0xFF; 32]);
+    }
+
+    #[test]
+    fn handle_incoming_group_control_leave() {
+        let storage = test_storage();
+        let seed = test_seed();
+        let event_tx = test_event_tx();
+
+        let group_id = [0x44; 32];
+        let group = aira_storage::GroupInfo {
+            id: group_id,
+            name: "Test".into(),
+            members: vec![
+                aira_storage::GroupMemberInfo {
+                    pubkey: vec![0xAA; 32],
+                    display_name: "A".into(),
+                    role: aira_storage::GroupRole::Admin,
+                    joined_at: 1000,
+                    sender_chain_key: [0; 32],
+                },
+                aira_storage::GroupMemberInfo {
+                    pubkey: vec![0xBB; 32],
+                    display_name: "B".into(),
+                    role: aira_storage::GroupRole::Member,
+                    joined_at: 1000,
+                    sender_chain_key: [0; 32],
+                },
+            ],
+            created_by: vec![0xAA; 32],
+            created_at: 1000,
+        };
+        aira_storage::groups::create_group(&storage, &group).unwrap();
+
+        let control = aira_core::group_proto::GroupControl::Leave { group_id };
+
+        let result =
+            handle_incoming_group_control(&storage, &seed, &[0xBB; 32], &control, &event_tx);
+        assert!(result.is_ok());
+
+        let updated = aira_storage::groups::get_group(&storage, &group_id).unwrap();
+        assert_eq!(updated.members.len(), 1);
+        assert_eq!(updated.members[0].pubkey, vec![0xAA; 32]);
+    }
+
+    #[test]
+    fn handle_incoming_payload_text_stores_message() {
+        let storage = test_storage();
+        let seed = test_seed();
+        let event_tx = test_event_tx();
+        let mut event_rx = event_tx.subscribe();
+
+        let sender = vec![0xAA; 32];
+        let payload = aira_core::proto::PlainPayload::Text("hello".into());
+        let payload_bytes = postcard::to_allocvec(&payload).unwrap();
+
+        let result = handle_incoming_payload(&storage, &seed, &sender, &payload_bytes, &event_tx);
+        assert!(result.is_ok());
+
+        // Message stored
+        let cid = aira_storage::contact_id(&sender);
+        let history = aira_storage::messages::get_history(&storage, cid, 10, u64::MAX).unwrap();
+        assert_eq!(history.len(), 1);
+        assert!(!history[0].sender_is_self);
+
+        // Event emitted
+        let event = event_rx.try_recv().expect("event");
+        assert!(matches!(
+            event,
+            crate::types::DaemonEvent::MessageReceived { .. }
+        ));
+    }
+
+    // ─── Tier 2: Important (existing code) ───────────────────────────────
+
+    #[tokio::test]
+    async fn handle_get_my_address_returns_unique_pseudonyms() {
+        let storage = test_storage();
+        let seed = test_seed();
+        let blob_store = aira_net::blobs::BlobStore::new();
+        let event_tx = test_event_tx();
+        let tm = crate::transfers::TransferManager::new(event_tx.clone());
+        let shutdown_tx = test_shutdown_tx();
+
+        let resp1 = handle_request(
+            &storage,
+            &seed,
+            &blob_store,
+            &tm,
+            &shutdown_tx,
+            DaemonRequest::GetMyAddress,
+        );
+        let resp2 = handle_request(
+            &storage,
+            &seed,
+            &blob_store,
+            &tm,
+            &shutdown_tx,
+            DaemonRequest::GetMyAddress,
+        );
+
+        let pk1 = match resp1 {
+            DaemonResponse::MyAddress(pk) => pk,
+            other => panic!("expected MyAddress, got {other:?}"),
+        };
+        let pk2 = match resp2 {
+            DaemonResponse::MyAddress(pk) => pk,
+            other => panic!("expected MyAddress, got {other:?}"),
+        };
+
+        assert_eq!(pk1.len(), 1952);
+        assert_eq!(pk2.len(), 1952);
+        assert_ne!(pk1, pk2, "each call should return a different pseudonym");
+    }
+
+    #[tokio::test]
+    async fn handle_group_add_member_enqueues_add_member() {
+        let storage = test_storage();
+        let seed = test_seed();
+        let blob_store = aira_net::blobs::BlobStore::new();
+        let event_tx = test_event_tx();
+        let tm = crate::transfers::TransferManager::new(event_tx.clone());
+        let shutdown_tx = test_shutdown_tx();
+
+        // Create group first
+        let resp = handle_request(
+            &storage,
+            &seed,
+            &blob_store,
+            &tm,
+            &shutdown_tx,
+            DaemonRequest::CreateGroup {
+                name: "G".into(),
+                members: vec![],
+            },
+        );
+        let group_id = match resp {
+            DaemonResponse::GroupCreated { group_id } => group_id,
+            other => panic!("expected GroupCreated, got {other:?}"),
+        };
+
+        // Add member
+        let resp = handle_request(
+            &storage,
+            &seed,
+            &blob_store,
+            &tm,
+            &shutdown_tx,
+            DaemonRequest::GroupAddMember {
+                group_id,
+                member: vec![0xCC; 32],
+            },
+        );
+        assert!(matches!(resp, DaemonResponse::Ok));
+
+        let group = aira_storage::groups::get_group(&storage, &group_id).unwrap();
+        assert_eq!(group.members.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn handle_leave_group_removes_and_notifies() {
+        let storage = test_storage();
+        let seed = test_seed();
+        let blob_store = aira_net::blobs::BlobStore::new();
+        let event_tx = test_event_tx();
+        let tm = crate::transfers::TransferManager::new(event_tx.clone());
+        let shutdown_tx = test_shutdown_tx();
+
+        // Create group
+        let resp = handle_request(
+            &storage,
+            &seed,
+            &blob_store,
+            &tm,
+            &shutdown_tx,
+            DaemonRequest::CreateGroup {
+                name: "Leave Test".into(),
+                members: vec![vec![0xDD; 32]],
+            },
+        );
+        let group_id = match resp {
+            DaemonResponse::GroupCreated { group_id } => group_id,
+            other => panic!("expected GroupCreated, got {other:?}"),
+        };
+
+        // Leave
+        let resp = handle_request(
+            &storage,
+            &seed,
+            &blob_store,
+            &tm,
+            &shutdown_tx,
+            DaemonRequest::LeaveGroup { group_id },
+        );
+        assert!(matches!(resp, DaemonResponse::Ok));
+
+        // Group should be gone
+        assert!(aira_storage::groups::get_group(&storage, &group_id).is_err());
+
+        // Leave control enqueued for member DD
+        let cid = aira_storage::contact_id(&[0xDD; 32]);
+        let pending = aira_storage::pending::peek(&storage, cid).unwrap();
+        assert!(pending.is_some(), "Leave should be enqueued");
+    }
+
+    #[tokio::test]
+    async fn handle_generate_link_code_returns_6_digits() {
+        let storage = test_storage();
+        let seed = test_seed();
+        let blob_store = aira_net::blobs::BlobStore::new();
+        let event_tx = test_event_tx();
+        let tm = crate::transfers::TransferManager::new(event_tx.clone());
+        let shutdown_tx = test_shutdown_tx();
+
+        let resp = handle_request(
+            &storage,
+            &seed,
+            &blob_store,
+            &tm,
+            &shutdown_tx,
+            DaemonRequest::GenerateLinkCode,
+        );
+
+        match resp {
+            DaemonResponse::LinkCode(code) => {
+                assert_eq!(code.len(), 6);
+                assert!(code.chars().all(|c| c.is_ascii_digit()));
+            }
+            other => panic!("expected LinkCode, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn handle_link_device_invalid_code_returns_error() {
+        let storage = test_storage();
+        let seed = test_seed();
+        let blob_store = aira_net::blobs::BlobStore::new();
+        let event_tx = test_event_tx();
+        let tm = crate::transfers::TransferManager::new(event_tx.clone());
+        let shutdown_tx = test_shutdown_tx();
+
+        let resp = handle_request(
+            &storage,
+            &seed,
+            &blob_store,
+            &tm,
+            &shutdown_tx,
+            DaemonRequest::LinkDevice {
+                code: "000000".into(),
+                device_name: "Fake".into(),
+            },
+        );
+
+        assert!(matches!(resp, DaemonResponse::Error(_)));
+    }
+
+    #[tokio::test]
+    async fn handle_get_pseudonyms_returns_stored_records() {
+        let storage = test_storage();
+        let seed = test_seed();
+        let blob_store = aira_net::blobs::BlobStore::new();
+        let event_tx = test_event_tx();
+        let tm = crate::transfers::TransferManager::new(event_tx.clone());
+        let shutdown_tx = test_shutdown_tx();
+
+        // Create group to generate a pseudonym
+        let _ = handle_request(
+            &storage,
+            &seed,
+            &blob_store,
+            &tm,
+            &shutdown_tx,
+            DaemonRequest::CreateGroup {
+                name: "P".into(),
+                members: vec![],
+            },
+        );
+
+        let resp = handle_request(
+            &storage,
+            &seed,
+            &blob_store,
+            &tm,
+            &shutdown_tx,
+            DaemonRequest::GetPseudonyms,
+        );
+
+        match resp {
+            DaemonResponse::Pseudonyms(list) => {
+                assert!(!list.is_empty(), "should have at least 1 pseudonym");
+                assert_eq!(list[0].pubkey.len(), 1952);
+            }
+            other => panic!("expected Pseudonyms, got {other:?}"),
+        }
+    }
+}

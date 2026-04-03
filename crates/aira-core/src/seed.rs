@@ -486,6 +486,19 @@ mod tests {
     }
 
     #[test]
+    fn generate_produces_valid_phrase_and_seed() {
+        let (phrase, seed) = MasterSeed::generate().expect("generate");
+        let words: Vec<&str> = phrase.split_whitespace().collect();
+        assert_eq!(words.len(), 24, "BIP-39 phrase must be 24 words");
+
+        // Phrase can re-derive the same seed
+        let seed2 = MasterSeed::from_phrase(&phrase).expect("from_phrase");
+        let k1: &[u8; 32] = &seed.derive("aira/identity/0");
+        let k2: &[u8; 32] = &seed2.derive("aira/identity/0");
+        assert_eq!(k1, k2, "generate() seed must be recoverable from phrase");
+    }
+
+    #[test]
     fn extract_11_bits_basic() {
         // 0x7FF = 11 bits all set = 2047
         let data = [0xFF, 0xE0, 0x00]; // 11111111 11100000 00000000

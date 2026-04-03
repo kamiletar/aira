@@ -280,6 +280,26 @@ mod tests {
     }
 
     #[test]
+    fn rate_limiter_ban_boundary() {
+        let mut rl = RateLimiter::new();
+        let pk = b"edge";
+        // Trigger ban
+        assert!(rl.check(pk, 1000).is_ok());
+        assert!(rl.check(pk, 1001).is_ok());
+        assert!(rl.check(pk, 1002).is_ok());
+        assert!(rl.check(pk, 1003).is_err()); // banned
+
+        // At 3599s after ban (t=1003+3599=4602) — still banned
+        assert!(rl.is_banned(pk, 4602));
+
+        // At exactly 3600s (t=1003+3600=4603) — ban expired (< not <=)
+        assert!(!rl.is_banned(pk, 4603));
+
+        // Can send again after ban expires
+        assert!(rl.check(pk, 4604).is_ok());
+    }
+
+    #[test]
     fn rate_limiter_different_keys_independent() {
         let mut rl = RateLimiter::new();
         let pk_a = b"alice";
