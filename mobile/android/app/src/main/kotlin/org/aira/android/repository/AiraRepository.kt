@@ -20,34 +20,33 @@ class AiraRepository(private val runtime: AiraRuntime) {
     }
 
     suspend fun addContact(pubkey: ByteArray, alias: String) = withContext(Dispatchers.IO) {
-        runtime.addContact(pubkey.toList().map { it.toUByte() }, alias)
+        runtime.addContact(pubkey, alias)
     }
 
     suspend fun removeContact(pubkey: ByteArray) = withContext(Dispatchers.IO) {
-        runtime.removeContact(pubkey.toList().map { it.toUByte() })
+        runtime.removeContact(pubkey)
     }
 
     // ── Messages ──────────────────────────────────────────────────────
 
     suspend fun sendMessage(to: ByteArray, text: String) = withContext(Dispatchers.IO) {
-        runtime.sendMessage(to.toList().map { it.toUByte() }, text)
+        runtime.sendMessage(to, text)
     }
 
     suspend fun getHistory(contact: ByteArray, limit: UInt): List<FfiMessage> =
         withContext(Dispatchers.IO) {
-            runtime.getHistory(contact.toList().map { it.toUByte() }, limit)
+            runtime.getHistory(contact, limit)
         }
 
     suspend fun getMyAddress(): ByteArray = withContext(Dispatchers.IO) {
-        runtime.getMyAddress().map { it.toByte() }.toByteArray()
+        runtime.getMyAddress()
     }
 
     // ── Groups ────────────────────────────────────────────────────────
 
     suspend fun createGroup(name: String, members: List<ByteArray>): ByteArray =
         withContext(Dispatchers.IO) {
-            val membersList = members.map { it.toList().map { b -> b.toUByte() } }
-            runtime.createGroup(name, membersList).map { it.toByte() }.toByteArray()
+            runtime.createGroup(name, members)
         }
 
     suspend fun getGroups(): List<FfiGroupInfo> = withContext(Dispatchers.IO) {
@@ -56,17 +55,17 @@ class AiraRepository(private val runtime: AiraRuntime) {
 
     suspend fun getGroupInfo(groupId: ByteArray): FfiGroupDetail =
         withContext(Dispatchers.IO) {
-            runtime.getGroupInfo(groupId.toList().map { it.toUByte() })
+            runtime.getGroupInfo(groupId)
         }
 
     suspend fun sendGroupMessage(groupId: ByteArray, text: String) =
         withContext(Dispatchers.IO) {
-            runtime.sendGroupMessage(groupId.toList().map { it.toUByte() }, text)
+            runtime.sendGroupMessage(groupId, text)
         }
 
     suspend fun getGroupHistory(groupId: ByteArray, limit: UInt): List<FfiMessage> =
         withContext(Dispatchers.IO) {
-            runtime.getGroupHistory(groupId.toList().map { it.toUByte() }, limit)
+            runtime.getGroupHistory(groupId, limit)
         }
 
     // ── Devices ───────────────────────────────────────────────────────

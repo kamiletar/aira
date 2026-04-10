@@ -4,6 +4,9 @@ import android.content.Context
 import android.content.Intent
 import org.aira.android.service.AiraDaemonService
 import org.unifiedpush.android.connector.MessagingReceiver
+import org.unifiedpush.android.connector.data.PushEndpoint
+import org.unifiedpush.android.connector.data.PushMessage
+import org.unifiedpush.android.connector.FailedReason
 
 /**
  * UnifiedPush receiver for decentralized push notifications.
@@ -14,20 +17,20 @@ import org.unifiedpush.android.connector.MessagingReceiver
  */
 class UnifiedPushReceiver : MessagingReceiver() {
 
-    override fun onMessage(context: Context, message: ByteArray, instance: String) {
+    override fun onMessage(context: Context, message: PushMessage, instance: String) {
         // Wake-up received — ensure daemon service is running
         val intent = Intent(context, AiraDaemonService::class.java)
         context.startForegroundService(intent)
     }
 
-    override fun onNewEndpoint(context: Context, endpoint: String, instance: String) {
+    override fun onNewEndpoint(context: Context, endpoint: PushEndpoint, instance: String) {
         // New push endpoint — register with relay
-        // TODO: pass endpoint to AiraRuntime.registerPushEndpoint(endpoint)
-        android.util.Log.i("UnifiedPush", "New endpoint: $endpoint")
+        // TODO: pass endpoint.url to AiraRuntime.registerPushEndpoint(endpoint)
+        android.util.Log.i("UnifiedPush", "New endpoint: ${endpoint.url}")
     }
 
-    override fun onRegistrationFailed(context: Context, instance: String) {
-        android.util.Log.w("UnifiedPush", "Registration failed")
+    override fun onRegistrationFailed(context: Context, reason: FailedReason, instance: String) {
+        android.util.Log.w("UnifiedPush", "Registration failed: $reason")
     }
 
     override fun onUnregistered(context: Context, instance: String) {
