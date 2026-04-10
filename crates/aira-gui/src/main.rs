@@ -20,6 +20,8 @@
 #![allow(clippy::unnecessary_wraps)]
 
 mod app;
+#[allow(dead_code)]
+mod daemon_manager;
 mod ipc;
 // Keychain is wired up incrementally by chunk A5 (IPC bridge bootstrap).
 // Until then the public helpers are unused — silence warnings rather than
