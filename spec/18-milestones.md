@@ -98,6 +98,42 @@
 4. Нативные уведомления (notify-rust)
 5. Сборка: AppImage (Linux), .dmg (macOS), .msi (Windows)
 
+### Milestone 9.5 — GUI UX: auto-spawn, onboarding, password vault, инсталляторы (v0.3.5, 2-3 недели)
+
+**Контекст:** после релиза v0.3.4 `aira-gui.exe` не работает при двойном клике — daemon нужно запускать руками с `AIRA_SEED`, keychain-заготовка не подключена, нет retry при разрывах, нет первого запуска. Решаем все эти проблемы и заодно делаем полноценные инсталляторы для всех десктоп-платформ.
+
+**Phase A — MVP (двойной клик → работает):**
+1. `aira-gui/src/keychain.rs` — переименовать API в `store_seed_phrase`/`load_seed_phrase`/`delete_seed_phrase`, все значения в `zeroize::Zeroizing<String>`, подключить модуль (снять `#[allow(dead_code)]`).
+2. `aira-gui/src/daemon_manager.rs` (new) — `locate_daemon_binary()` (`current_exe().parent()` + fallback PATH), `spawn(seed)` через `std::process::Command` с `CREATE_NO_WINDOW` на Windows, `stderr: Stdio::piped()`, `check_early_exit()`, `impl Drop` с kill при owned.
+3. `aira-gui/src/onboarding.rs` + `views/welcome.rs` (new) — Welcome / Create new identity (показ phrase + checkbox "записал") / Import existing (BIP-39 валидация через `aira_core::seed::MasterSeed::from_phrase`).
+4. `state::ConnectionState` enum заменяет `connected: bool`: `Uninitialized / OnboardingRequired / Onboarding / SpawningDaemon / Connecting / Connected / Disconnected{can_retry} / Reconnecting{attempt,delay} / GaveUp`.
+5. Новые `GuiCommand` (`CompleteOnboarding`, `RetryConnection`, `ResetIdentity`) и `GuiUpdate` (`OnboardingRequired`, `SpawningDaemon`, `Reconnecting`, `DaemonSpawnFailed`, `DaemonNotFound`, `KeychainUnavailable`). Manual Debug для вариантов с phrase — `"[REDACTED]"`.
+6. Переписать `ipc::run_ipc_bridge` на `Bridge { bootstrap, main_loop, reconnect_loop, shutdown }`:
+   - `bootstrap`: keychain → onboarding если пусто → try connect (pre-existing daemon, owned=false) → spawn + poll 200ms×50 если нет (owned=true).
+   - `main_loop`: на request/event error вызывать `reconnect_loop`, не break.
+   - `reconnect_loop`: backoff `[500, 1000, 2000, 5000, 10000]` ms, one-shot re-spawn если owned child умер.
+   - `shutdown`: `DaemonRequest::Shutdown` → sleep 500ms → `DaemonHandle::drop` убивает owned child.
+7. `app.rs` — status bar match по `conn_state` (Online / Starting daemon / Reconnecting (N) / Offline + Retry), `on_exit` handler, welcome early return.
+
+**Phase B — опциональная защита паролем:**
+1. `aira-gui/src/password_vault.rs` (new) — `SeedVault { version, salt, nonce, ciphertext }` через postcard, `lock/unlock` с Argon2id (m=128MB, t=3, p=1) + ChaCha20Poly1305. KDF context `aira-gui/password-vault/v1` — добавить в `docs/KEY_CONTEXTS.md`.
+2. `keychain.rs` — dual mode: `StoredSeed::Plain` (account `seed-phrase-plain-v1`) или `Vault(Vec<u8>)` (account `seed-phrase-vault-v1`). `load_seed()` возвращает то что есть.
+3. `views/settings.rs` — секция Security с toggle "Protect identity with password", модалки Set/Change/Disable.
+4. `views/unlock.rs` (new) + `ConnectionState::Locked{attempt}` + новый bootstrap бранч для Vault с ожиданием `GuiCommand::SubmitPassword`.
+5. "Forgot password? Reset identity" — очищает vault, возвращает в onboarding (восстановление только через Import записанной phrase).
+
+**Phase C — инсталляторы для десктопа:**
+1. **Windows:** `cargo-wix` + WiX Toolset v4. `crates/aira-gui/wix/main.wxs` включает `aira-gui.exe`, `aira-daemon.exe`, `aira.exe`, Start Menu shortcut, per-user install (без admin). Артефакт `aira-0.3.5-setup.msi`. Без code signing в v0.3.5 (SmartScreen warning — документируем).
+2. **macOS:** `scripts/bundle-macos.sh` собирает `Aira.app` (GUI + daemon как siblings в `Contents/MacOS/`, Info.plist, .icns из iconset). `create-dmg` упаковывает в `.dmg` для обоих arch (ARM + Intel). Без notarization в v0.3.5 — документируем `xattr -dr com.apple.quarantine` или ПКМ → Open.
+3. **Linux:** `scripts/bundle-appimage.sh` через `linuxdeploy` — AppImage с bundled GTK (основной), опционально `cargo deb -p aira-gui` для `.deb`. Результат: `Aira-0.3.5-x86_64.AppImage` + `aira-gui_0.3.5_amd64.deb`.
+4. `.github/workflows/release.yml` — добавить шаги MSI/DMG/AppImage в существующие platform jobs, загрузка в тот же GitHub Release вместе с raw бинарниками.
+5. `docs/INSTALL.md` (new) — пошаговая установка, обход warning'ов (SmartScreen/Gatekeeper), uninstall.
+6. `aira-web` (отдельный репо): обновить `download-section.tsx` — primary ссылки на installers, secondary на raw бинарники.
+
+**Тесты:** unit — onboarding validate, daemon_manager locate, password_vault roundtrip, state handle_update, reconnect mock через `DaemonClientLike` trait + `tokio::time::pause/advance`. Manual — 12-шаговый сценарий (fresh install → onboarding → daemon spawn → reconnect на kill → close → restart → password protect → unlock → disable → reset identity).
+
+**Безопасность:** Все места с seed phrase через `Zeroizing<String>`; Manual Debug с `[REDACTED]`; никаких `tracing` с phrase. `Command::env` libstd-лимит (нет zeroize копии) — документировано в комментарии, жизнь копии до `spawn()`. KDF контексты изолированы (password-vault не пересекается с storage/identity).
+
 ### Milestone 10 — Mobile: Android (v0.3, 3-4 недели)
 
 1. `aira-ffi/` — UniFFI биндинги
