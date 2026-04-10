@@ -93,3 +93,19 @@
 | `aira/reality/sid/0` | REALITY short ID derivation from PSK | aira-net/transport |
 | `aira/reality/auth/0` | REALITY authentication MAC key derivation | aira-net/transport |
 | `aira/reality/session/0` | REALITY session key derivation | aira-net/transport |
+
+## GUI Password Vault (опциональная защита ключа паролем)
+
+> Не использует BLAKE3 KDF — этот контекст изолирован от всех остальных и
+> выводит ключ из **пароля пользователя** через Argon2id. Это единственная
+> точка в кодовой базе, где seed/vault key зависит не от master seed, а от
+> пользовательского ввода. Поэтому важно явно документировать контекст,
+> чтобы не смешать его с другими.
+
+| Контекст | Назначение | Крейт | KDF |
+|----------|-----------|-------|-----|
+| `aira-gui/password-vault/v1` | Шифрование seed phrase пользовательским паролем | aira-gui/password_vault | Argon2id m=128MB, t=3, p=1 |
+
+**Формат:** `SeedVault { version: u8 = 1, salt: [u8; 16], nonce: [u8; 12], ciphertext: Vec<u8> }`, сериализация через postcard, AEAD — ChaCha20-Poly1305. Salt и nonce случайные per-vault. Ключ `derive_key(password, salt)` — 32 байта. Версия `1` позволяет миграцию при смене параметров.
+
+**Rationale:** m=128MB (vs m=256MB у `aira-core/seed.rs`) — vault unlock вызывается на каждом старте GUI, нужна интерактивная задержка ~1 сек, а не 3. Это всё ещё GPU-устойчиво.

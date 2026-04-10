@@ -26,6 +26,9 @@ mod keychain;
 #[allow(dead_code)]
 mod notifications;
 mod onboarding;
+// Wired up by chunks B2-B4 (keychain vault mode + Settings toggle + unlock view).
+#[allow(dead_code)]
+mod password_vault;
 mod state;
 #[allow(dead_code)]
 mod theme;
