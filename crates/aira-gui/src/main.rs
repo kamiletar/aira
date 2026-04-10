@@ -21,6 +21,9 @@
 
 mod app;
 mod ipc;
+// Keychain is wired up incrementally by chunk A5 (IPC bridge bootstrap).
+// Until then the public helpers are unused — silence warnings rather than
+// re-adding the stale `#[allow(dead_code)]` on the whole module.
 #[allow(dead_code)]
 mod keychain;
 #[allow(dead_code)]

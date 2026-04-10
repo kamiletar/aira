@@ -50,6 +50,9 @@ serde.workspace = true
 # Hex encoding for pubkeys display
 hex.workspace = true
 
+# Secure memory for seed phrase handling
+zeroize.workspace = true
+
 # Utilities
 tracing.workspace = true
 tracing-subscriber.workspace = true
