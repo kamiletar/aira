@@ -23,5 +23,9 @@ thiserror.workspace = true
 rand.workspace = true
 blake3.workspace = true
 
+[[bin]]
+name = "uniffi-bindgen"
+path = "src/bin/uniffi-bindgen.rs"
+
 [dev-dependencies]
 tempfile = "3"

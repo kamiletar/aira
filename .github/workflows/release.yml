@@ -136,13 +136,11 @@ jobs:
           cp target/x86_64-linux-android/release/libaira_ffi.so \
             mobile/android/app/src/main/jniLibs/x86_64/
 
-      - name: Install uniffi-bindgen
-        run: cargo install uniffi_bindgen@0.28.0
-
       - name: Generate Kotlin bindings
         run: |
           cargo build -p aira-ffi
-          uniffi-bindgen generate crates/aira-ffi/src/lib.rs \
+          cargo run -p aira-ffi --bin uniffi-bindgen -- \
+            generate crates/aira-ffi/src/lib.rs \
             --library target/debug/libaira_ffi.so \
             --language kotlin \
             --out-dir mobile/android/app/src/main/kotlin/
