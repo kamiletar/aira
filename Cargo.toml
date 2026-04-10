@@ -16,7 +16,7 @@ version = "0.3.3"
 edition = "2021"
 authors = ["Aira contributors"]
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/aira-messenger/aira"
+repository = "https://github.com/kamiletar/aira"
 rust-version = "1.82"
 
 [workspace.dependencies]
