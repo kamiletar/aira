@@ -50,6 +50,7 @@ zeroize = { version = "1", features = ["derive"] }
 # Сериализация
 serde = { version = "1", features = ["derive"] }
 postcard = { version = "1", features = ["alloc"] }
+base64 = "0.22"
 
 # База данных
 redb = "2"

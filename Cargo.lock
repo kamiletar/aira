@@ -283,6 +283,7 @@ dependencies = [
  "aira-daemon",
  "aira-storage",
  "argon2",
+ "base64",
  "chacha20poly1305",
  "eframe",
  "egui",
