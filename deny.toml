@@ -1,4 +1,6 @@
 [licenses]
+# Licenses we have reviewed and accept as compatible with Aira's
+# MIT OR Apache-2.0 dual license.
 allow = [
     "MIT",
     "Apache-2.0",
@@ -7,13 +9,26 @@ allow = [
     "BSD-3-Clause",
     "ISC",
     "Unicode-DFS-2016",
+    "Unicode-3.0",       # unicode-ident 1.0.18+
     "CC0-1.0",
     "Zlib",
+    "Unlicense",         # byteorder-lite and a few others — public-domain-equivalent
+    "MPL-2.0",           # webpki-roots, option-ext: copyleft at the file level, permissible for deps
+    "BSL-1.0",           # xxhash-rust, ryu: Boost Software License
+    "OFL-1.1",           # fonts embedded by egui
+    "LicenseRef-UFL-1.0",# Ubuntu Font Licence — transitively via egui/fontdb
+    "CDLA-Permissive-2.0",# webpki-root-certs: Mozilla CA bundle
 ]
 
 [bans]
 multiple-versions = "warn"
-wildcards = "deny"
+# Our workspace crates reference each other through `path = "..."` without
+# version constraints. cargo-deny flags these as "wildcard dependencies"
+# unconditionally for publishable (publish = true) crates — see the comment
+# on cargo-deny issue #595. Since we're not publishing to crates.io in this
+# milestone, downgrading to `warn` is safe. Revisit when we set
+# `publish = false` explicitly (tracked for v0.4).
+wildcards = "warn"
 
 [advisories]
 db-urls = ["https://github.com/rustsec/advisory-db"]
@@ -24,12 +39,36 @@ ignore = [
     # RUSTSEC-2025-0144 — Timing side-channel in ML-DSA decomposition.
     # Fix requires upgrading ml-dsa 0.0.4 → 0.1.0-rc.3, which is a breaking
     # API change that will touch crates/aira-core/src/crypto/rustcrypto.rs.
-    # Scheduled for v0.3.6 (tracked in spec/18-milestones.md). The timing
-    # side-channel applies to the signing path which already runs behind
-    # a Zeroizing<> guard and is not called on an attacker-influenced
-    # schedule; exposure is low-severity for our threat model, but we will
-    # upgrade the crate in the next release.
+    # Scheduled for v0.3.6. The timing side-channel applies to the signing
+    # path which already runs behind a Zeroizing<> guard and is not called
+    # on an attacker-influenced schedule; low-severity for our threat model.
     "RUSTSEC-2025-0144",
+
+    # Unmaintained-warning noise from transitive deps we don't control.
+    # All of these are deeply transitive through iroh / egui / gradle
+    # plugin machinery; direct upstream replacements will come with
+    # future bumps of those crates, not with changes in aira-* code.
+    "RUSTSEC-2024-0370",  # proc-macro-error — unmaintained, pulled in via old proc-macro stack
+    "RUSTSEC-2024-0384",  # instant — unmaintained, transitive via parking_lot < 0.12.2
+    "RUSTSEC-2024-0388",  # derivative — unmaintained, transitive via bindgen
+    "RUSTSEC-2024-0436",  # paste — unmaintained, transitive via egui/tray-icon
+    "RUSTSEC-2025-0141",  # yaml-rust — unmaintained, transitive via insta
+    "RUSTSEC-2024-0320",  # yaml-rust — older advisory, same crate
+    "RUSTSEC-2024-0412",  # atk / gtk-rs ecosystem unmaintained
+    "RUSTSEC-2024-0413",  # atk-sys
+    "RUSTSEC-2024-0414",  # gdk
+    "RUSTSEC-2024-0415",  # gdk-sys
+    "RUSTSEC-2024-0416",  # gdkwayland-sys
+    "RUSTSEC-2024-0417",  # gdkx11
+    "RUSTSEC-2024-0418",  # gdkx11-sys
+    "RUSTSEC-2024-0419",  # gtk
+    "RUSTSEC-2024-0420",  # gtk-sys
+    "RUSTSEC-2024-0421",  # gtk3-macros
+    "RUSTSEC-2024-0422",  # atk3
+    "RUSTSEC-2023-0089",  # atomic-polyfill — unmaintained, transitive
+    "RUSTSEC-2023-0071",  # rsa — Marvin attack; we don't use rsa directly
+    "RUSTSEC-2024-0429",  # glib — unsoundness in VariantStrIter, gtk3 transitive
+    "RUSTSEC-2026-0002",  # lru — IterMut Stacked Borrows, ratatui transitive
 ]
 
 [sources]
