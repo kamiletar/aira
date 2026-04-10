@@ -9,7 +9,7 @@
 use tokio::sync::mpsc;
 
 use crate::ipc::{GuiCommand, GuiUpdate};
-use crate::state::{GuiState, View};
+use crate::state::{ConnectionStatus, GuiState, View};
 use crate::theme;
 use crate::tray::{self, TrayAction, TrayMenuIds};
 
@@ -69,6 +69,16 @@ impl AiraApp {
 }
 
 impl eframe::App for AiraApp {
+    /// Graceful shutdown hook: ask the IPC bridge to send
+    /// `DaemonRequest::Shutdown` to the daemon, then wait briefly so the
+    /// bridge's `shutdown()` routine has time to kill any owned child.
+    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        // Use try_send — if the channel is full or closed we can't block here.
+        let _ = self.cmd_tx.try_send(GuiCommand::Shutdown);
+        // Give the bridge 600ms to process shutdown + kill owned child.
+        std::thread::sleep(std::time::Duration::from_millis(600));
+    }
+
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         // 1. Drain updates from IPC bridge
         while let Ok(update) = self.update_rx.try_recv() {
@@ -106,6 +116,19 @@ impl eframe::App for AiraApp {
             self.fonts_loaded = true;
         }
         theme::apply_theme(ctx);
+
+        // 4.5. Onboarding early return — no top bar / nav tabs while the
+        // user hasn't completed the welcome flow.
+        if matches!(self.state.conn_status, ConnectionStatus::OnboardingRequired) {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                if let Some(cmd) =
+                    crate::views::welcome::welcome_view(ui, &mut self.state.onboarding)
+                {
+                    self.send_command(cmd);
+                }
+            });
+            return;
+        }
 
         // 5. Render UI — top navigation bar
         egui::TopBottomPanel::top("top_bar")
@@ -173,13 +196,49 @@ impl eframe::App for AiraApp {
                         }
                     }
 
-                    // Connection status — compact dot + label
+                    // Connection status — compact dot + label, with a
+                    // Retry button when the bridge gave up.
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        let (color, status_label) = if self.state.connected {
-                            (theme::SUCCESS, "Online")
-                        } else {
-                            (theme::DANGER, "Offline")
+                        let (color, status_label, retry) = match &self.state.conn_status {
+                            ConnectionStatus::Connected => {
+                                (theme::SUCCESS, "Online".to_string(), false)
+                            }
+                            ConnectionStatus::Connecting => (
+                                theme::STATUS_OFFLINE,
+                                "Connecting...".to_string(),
+                                false,
+                            ),
+                            ConnectionStatus::OnboardingRequired => {
+                                // Unreachable here (early return above),
+                                // but keep the match exhaustive.
+                                (theme::STATUS_OFFLINE, "Setup".to_string(), false)
+                            }
+                            ConnectionStatus::SpawningDaemon => (
+                                theme::STATUS_OFFLINE,
+                                "Starting daemon...".to_string(),
+                                false,
+                            ),
+                            ConnectionStatus::Reconnecting {
+                                attempt,
+                                next_in_ms,
+                            } => (
+                                theme::STATUS_OFFLINE,
+                                format!(
+                                    "Reconnecting ({}, {}s)",
+                                    attempt,
+                                    next_in_ms / 1000
+                                ),
+                                false,
+                            ),
+                            ConnectionStatus::Disconnected { can_retry, .. } => {
+                                (theme::DANGER, "Offline".to_string(), *can_retry)
+                            }
                         };
+
+                        if retry && ui.small_button("Retry").clicked() {
+                            let _ = self.cmd_tx.try_send(GuiCommand::RetryConnection);
+                        }
+
                         ui.label(
                             egui::RichText::new(status_label)
                                 .size(theme::FONT_SMALL)

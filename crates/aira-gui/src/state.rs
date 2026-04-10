@@ -50,11 +50,41 @@ pub struct TransferProgress {
     pub total: u64,
 }
 
+/// Fine-grained connection status used to drive the status bar and
+/// welcome routing. `connected: bool` is kept alongside it for
+/// backwards compatibility with existing code paths
+/// (`fetch_initial_data`, views that only care whether they can send
+/// commands).
+#[derive(Debug, Clone)]
+pub enum ConnectionStatus {
+    /// Initial state while the IPC bridge is still bootstrapping.
+    Connecting,
+    /// No seed phrase in the keychain — render the welcome/onboarding view.
+    OnboardingRequired,
+    /// Daemon child has been spawned; waiting for its IPC socket.
+    SpawningDaemon,
+    /// Connected to the daemon; normal operation.
+    Connected,
+    /// Transiently disconnected; bridge is running the reconnect schedule.
+    Reconnecting { attempt: u32, next_in_ms: u64 },
+    /// Fatal / gave-up state with a user-facing reason (mirrored in
+    /// `status_message` for rendering; kept here for programmatic access).
+    Disconnected {
+        #[allow(dead_code)]
+        reason: String,
+        can_retry: bool,
+    },
+}
+
 /// Complete GUI state — single source of truth for rendering.
 pub struct GuiState {
     // ─── Connection ─────────────────────────────────────────────────────
-    /// Whether we are connected to the daemon.
+    /// Whether we are connected to the daemon (derived from `conn_status`).
     pub connected: bool,
+    /// Detailed connection / onboarding status for the status bar + routing.
+    pub conn_status: ConnectionStatus,
+    /// Onboarding flow state, used when `conn_status == OnboardingRequired`.
+    pub onboarding: crate::onboarding::OnboardingState,
     /// Last error or status message.
     pub status_message: Option<String>,
 
@@ -135,6 +165,8 @@ impl GuiState {
     pub fn new() -> Self {
         Self {
             connected: false,
+            conn_status: ConnectionStatus::Connecting,
+            onboarding: crate::onboarding::OnboardingState::default(),
             status_message: Some("Connecting to daemon...".into()),
             active_view: View::Contacts,
             previous_view: None,
@@ -227,10 +259,15 @@ impl GuiState {
         match update {
             GuiUpdate::Connected => {
                 self.connected = true;
+                self.conn_status = ConnectionStatus::Connected;
                 self.status_message = None;
             }
             GuiUpdate::Disconnected(e) => {
                 self.connected = false;
+                self.conn_status = ConnectionStatus::Disconnected {
+                    reason: e.clone(),
+                    can_retry: true,
+                };
                 self.status_message = Some(format!("Disconnected: {e}"));
             }
             GuiUpdate::ContactsLoaded(contacts) => {
@@ -380,14 +417,15 @@ impl GuiState {
             }
 
             // ─── Onboarding / connection lifecycle (Milestone 9.5) ──────
-            // These transition ConnectionState in a follow-up chunk (A4).
-            // Stub handling for now so GuiUpdate matches exhaustively.
             GuiUpdate::OnboardingRequired => {
                 self.connected = false;
-                self.status_message = Some("First-run setup required".into());
+                self.conn_status = ConnectionStatus::OnboardingRequired;
+                self.onboarding = crate::onboarding::OnboardingState::default();
+                self.status_message = None;
             }
             GuiUpdate::SpawningDaemon => {
                 self.connected = false;
+                self.conn_status = ConnectionStatus::SpawningDaemon;
                 self.status_message = Some("Starting daemon...".into());
             }
             GuiUpdate::Reconnecting {
@@ -395,25 +433,44 @@ impl GuiState {
                 next_in_ms,
             } => {
                 self.connected = false;
+                self.conn_status = ConnectionStatus::Reconnecting {
+                    attempt,
+                    next_in_ms,
+                };
                 self.status_message = Some(format!(
                     "Reconnecting (attempt {attempt}, retry in {}s)...",
                     next_in_ms / 1000
                 ));
             }
-            GuiUpdate::DaemonSpawnFailed { reason, stderr: _ } => {
+            GuiUpdate::DaemonSpawnFailed { reason, stderr } => {
                 self.connected = false;
-                self.status_message = Some(format!("Daemon failed to start: {reason}"));
+                let full = match stderr {
+                    Some(s) if !s.is_empty() => format!("{reason}\n{s}"),
+                    _ => reason,
+                };
+                self.conn_status = ConnectionStatus::Disconnected {
+                    reason: full.clone(),
+                    can_retry: true,
+                };
+                self.status_message = Some(format!("Daemon failed to start: {full}"));
             }
             GuiUpdate::DaemonNotFound { expected_path } => {
                 self.connected = false;
-                self.status_message = Some(format!(
-                    "aira-daemon not found at {}",
-                    expected_path.display()
-                ));
+                let reason = format!("aira-daemon not found at {}", expected_path.display());
+                self.conn_status = ConnectionStatus::Disconnected {
+                    reason: reason.clone(),
+                    can_retry: false,
+                };
+                self.status_message = Some(reason);
             }
             GuiUpdate::KeychainUnavailable(err) => {
                 self.connected = false;
-                self.status_message = Some(format!("Keychain unavailable: {err}"));
+                let reason = format!("Keychain unavailable: {err}");
+                self.conn_status = ConnectionStatus::Disconnected {
+                    reason: reason.clone(),
+                    can_retry: false,
+                };
+                self.status_message = Some(reason);
             }
         }
 
