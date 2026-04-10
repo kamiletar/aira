@@ -1,0 +1,116 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+env:
+  CARGO_TERM_COLOR: always
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build (${{ matrix.target }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            archive: tar.gz
+          - runner: macos-latest
+            target: aarch64-apple-darwin
+            archive: tar.gz
+          - runner: macos-13
+            target: x86_64-apple-darwin
+            archive: tar.gz
+          - runner: windows-latest
+            target: x86_64-pc-windows-msvc
+            archive: zip
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release-${{ matrix.target }}
+
+      - name: Install system dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-3-dev libxdo-dev \
+            libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev
+
+      - name: Build release binaries
+        run: |
+          cargo build --release --target ${{ matrix.target }} \
+            -p aira-cli -p aira-daemon -p aira-gui
+
+      - name: Package (Unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          STAGING="aira-${VERSION}-${{ matrix.target }}"
+          mkdir -p "${STAGING}"
+
+          cp "target/${{ matrix.target }}/release/aira" "${STAGING}/"
+          cp "target/${{ matrix.target }}/release/aira-daemon" "${STAGING}/"
+          cp "target/${{ matrix.target }}/release/aira-gui" "${STAGING}/"
+
+          tar czf "${STAGING}.tar.gz" "${STAGING}"
+          shasum -a 256 "${STAGING}.tar.gz" > "${STAGING}.tar.gz.sha256"
+
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $version = "${{ github.ref_name }}".TrimStart("v")
+          $staging = "aira-${version}-${{ matrix.target }}"
+          New-Item -ItemType Directory -Path $staging
+
+          Copy-Item "target/${{ matrix.target }}/release/aira.exe" "$staging/"
+          Copy-Item "target/${{ matrix.target }}/release/aira-daemon.exe" "$staging/"
+          Copy-Item "target/${{ matrix.target }}/release/aira-gui.exe" "$staging/"
+
+          Compress-Archive -Path "$staging/*" -DestinationPath "$staging.zip"
+          $hash = (Get-FileHash "$staging.zip" -Algorithm SHA256).Hash.ToLower()
+          "$hash  $staging.zip" | Out-File -Encoding ascii "$staging.zip.sha256"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: aira-${{ matrix.target }}
+          path: |
+            aira-*.${{ matrix.archive }}
+            aira-*.${{ matrix.archive }}.sha256
+
+  release:
+    name: Create GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            artifacts/aira-*.tar.gz
+            artifacts/aira-*.zip
+            artifacts/*.sha256
