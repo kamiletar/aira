@@ -16,9 +16,17 @@
 set -euo pipefail
 
 VERSION="${1:?version required (e.g. 0.3.5)}"
+# Optional target triple (e.g. x86_64-unknown-linux-gnu). When present,
+# binaries are expected under target/<triple>/release; otherwise under
+# target/release. The release.yml workflow always passes the triple.
+TARGET="${2:-}"
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-BIN_DIR="$ROOT/target/release"
+if [[ -n "$TARGET" ]]; then
+    BIN_DIR="$ROOT/target/$TARGET/release"
+else
+    BIN_DIR="$ROOT/target/release"
+fi
 OUT_DIR="$ROOT/target/appimage"
 APPDIR="$OUT_DIR/AppDir"
 
