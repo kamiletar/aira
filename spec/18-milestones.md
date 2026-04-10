@@ -134,6 +134,110 @@
 
 **Безопасность:** Все места с seed phrase через `Zeroizing<String>`; Manual Debug с `[REDACTED]`; никаких `tracing` с phrase. `Command::env` libstd-лимит (нет zeroize копии) — документировано в комментарии, жизнь копии до `spawn()`. KDF контексты изолированы (password-vault не пересекается с storage/identity).
 
+### Milestone 9.6 — Security, Android signing, i18n, темы, UX polish (v0.3.6, 2-3 недели)
+
+**Контекст:** после v0.3.5 остались долги:
+- **Security:** `RUSTSEC-2025-0144` (ml-dsa 0.0.4 timing side-channel) заглушён ignore'ом в `deny.toml` / `.cargo/audit.toml`. Нужен реальный upgrade.
+- **Android:** APK подписан только debug-ключом → пользователь не может обновить поверх предыдущей установки.
+- **GUI:** весь UI hardcoded на English; нет переключения светлой/тёмной темы (сейчас только dark); контакты и чаты выглядят грубо.
+
+Не цели: code signing для Windows/macOS (отдельный бюджетный вопрос, отложено на v0.4), уменьшение размера AppImage, iOS.
+
+**Phase A — Security hardening**
+
+1. **ml-dsa 0.0.4 → 0.1.0+**
+   - Workspace dep bump в корневом `Cargo.toml`.
+   - Переписать `crates/aira-core/src/crypto/rustcrypto.rs` под новый API. Breaking изменения: `SigningKey::sign` / `VerifyingKey::verify` могли поменять сигнатуру; `serialize/deserialize` через SPKI; возможна миграция seed-based keygen из `Pqdsa::KeyPair::from_seed()` на новый trait.
+   - Обновить тесты в `crates/aira-core/src/crypto/` — как минимум `identity.rs` roundtrip, `sign_verify` unit.
+   - Проверить cross-backend compat тест (RustCrypto ↔ aws-lc-rs feature flag), если `aira-core/src/crypto/awslc.rs` уже существует к этому моменту.
+   - Удалить `RUSTSEC-2025-0144` из `deny.toml` [advisories.ignore] и `.cargo/audit.toml`.
+   - Регрессионный тест: подпись от v0.3.5 (снэпшот) должна **не** расшифровываться v0.3.6 без явной миграции — если это breaking для wire format, нужен plan на bridge release (реально: подпись — это только local identity, не влияет на wire, поэтому upgrade незаметен для пользователя).
+
+**Phase B — Android release signing**
+
+2. **Release keystore + CI secrets**
+   - `mobile/android/app/build.gradle.kts`: добавить `signingConfigs { create("release") { ... } }`, читать параметры из env (`RELEASE_KEYSTORE_PATH`, `RELEASE_KEYSTORE_PASSWORD`, `RELEASE_KEY_ALIAS`, `RELEASE_KEY_PASSWORD`).
+   - `buildTypes { release { signingConfig = signingConfigs.getByName("release") } }`.
+   - Локально: сгенерить `aira-release.keystore` через `keytool`, закодировать в base64, положить в репо только `docs/ANDROID_SIGNING.md` с инструкцией (сам keystore — **НЕ в git**).
+   - GitHub Secrets: `ANDROID_KEYSTORE_BASE64`, `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS`, `ANDROID_KEY_PASSWORD`.
+   - `.github/workflows/release.yml` — в Android job перед `gradle assembleRelease` расшифровать base64 в файл, экспортировать env vars.
+   - Финальный шаг: `apksigner verify --verbose --print-certs aira-0.3.6-android.apk` для проверки.
+   - Предупреждение для пользователей v0.3.5 → v0.3.6: **нужна переустановка** (старый debug-ключ отличается от нового release). Документировать в `docs/INSTALL.md` → "Upgrade notes".
+
+**Phase C — Internationalization (сразу 10 языков)**
+
+3. **Fluent locales для GUI**
+   - `crates/aira-gui/assets/locales/{en,ru,de,es,fr,pt,ar,hi,ja,zh}.ftl` — по одному файлу на локаль, параллельно синхронизированы с `aira-web/messages/*.json`.
+   - Использовать существующий `aira_core::i18n::I18n` или создать тонкий GUI-specific wrapper. В `aira-core` уже есть fluent dep и `i18n` модуль.
+   - Новый модуль `crates/aira-gui/src/locale.rs`: `tr("welcome.title")` функция, держит глобальный `OnceLock<I18n>`.
+   - `GuiState.locale: String` с автодетекцией через `sys-locale` crate → fallback "en" если локаль не поддерживается.
+   - Settings → Language dropdown: `en, ru, de, es, fr, pt, ar, hi, ja, zh`. Смена через команду `GuiCommand::SetLocale` → перерендер на следующем `update()`.
+   - Все hardcoded строки в `views/welcome.rs`, `views/unlock.rs`, `views/settings.rs`, `views/contacts.rs`, `views/chat.rs`, `app.rs` (status bar) заменить на `tr("…")`.
+   - RTL поддержка для `ar`: egui имеет `LayoutDirection::RightToLeft` — применить когда locale starts with "ar" / "he".
+   - Chunk split: (B3a) инфраструктура + en/ru, (B3b) остальные 8 языков — можно делать параллельно.
+
+**Phase D — Темы (dark / light / system)**
+
+4. **`ColorScheme` и light palette**
+   - `crates/aira-gui/src/theme.rs`: текущий dark вынести в `DarkPalette`, добавить `LightPalette` с hand-picked цветами.
+   - `enum ColorScheme { System, Light, Dark }`, persisted в `GuiState.color_scheme`.
+   - Зависимость `dark-light = "1"` или `egui` built-in OS-theme detection (если есть в текущей версии 0.29).
+   - `apply_theme(ctx)` выбирает палитру на основе `state.color_scheme` (если `System` — спрашиваем dark-light раз на старте + по таймеру 5 сек).
+   - Settings → Appearance section: radio с 3 вариантами + live preview.
+   - Сохранение выбора: дополнительный keychain entry `aira-messenger / gui-settings` (JSON) или простой файл `$LOCALAPPDATA/aira/gui-settings.json`. Лучше файл, т.к. не секретный.
+   - Chunk: (D4a) theme enum + light palette, (D4b) OS detection + Settings UI.
+
+**Phase E — UX polish: contacts & chat**
+
+5. **Contacts view**
+   - `widgets/avatar.rs` (new): детерминированный hash-to-color по pubkey + первая буква alias, round 36dp.
+   - Contact row: аватар + alias + last-message preview + unread badge + status dot.
+   - `ContactListItem` layout: 2 строки — alias + short preview, right side — timestamp + unread bubble.
+   - Search field сверху списка → фильтр по alias (case-insensitive, substring match).
+   - Online/offline статус: используем `state.online: HashSet<pubkey>` из ipc events → green/grey dot overlaid на аватар.
+
+6. **Chat view**
+   - Date separators: группировать сообщения по дням — "Today", "Yesterday", "April 8, 2026".
+   - Message grouping: consecutive сообщения от одного автора без аватара каждый раз.
+   - Delivered/read indicators: одна галочка (delivered), две (read). Протокол: read receipt через уже существующее событие `MessageReceived` + новый `MessageRead { message_id }` в daemon IPC (нужно расширить `DaemonRequest`/`DaemonEvent`). Off-scope если протокол не готов — отложить до 9.7.
+   - Multi-line input: `TextEdit::multiline` + Shift+Enter = newline, Enter = send.
+   - Auto-scroll к последнему сообщению при новом input или receive.
+
+**Тесты:**
+- Unit: `locale::tr` fallback chain (en missing → error; ru missing key → en fallback → key name).
+- Unit: `theme::ColorScheme::resolve(System)` returns Dark on dark OS, Light on light OS.
+- Snapshot (insta): locale files все содержат одинаковый set ключей (key parity check через скрипт).
+- Integration: startup с `AIRA_LOCALE=ja` env var → UI рендерится на японском.
+- Manual: MSI upgrade v0.3.5 → v0.3.6 (in-place), Android APK signing verify, light theme все views.
+
+**Файлы к созданию:**
+- `crates/aira-gui/assets/locales/*.ftl` (×10)
+- `crates/aira-gui/src/locale.rs`
+- `crates/aira-gui/src/widgets/avatar.rs`
+- `docs/ANDROID_SIGNING.md`
+
+**Файлы к изменению:**
+- `Cargo.toml` (workspace, ml-dsa bump)
+- `crates/aira-core/src/crypto/rustcrypto.rs` (ml-dsa API)
+- `crates/aira-gui/src/theme.rs` (light palette + ColorScheme)
+- `crates/aira-gui/src/state.rs` (locale + color_scheme fields)
+- `crates/aira-gui/src/views/*.rs` (все строки → tr)
+- `crates/aira-gui/src/views/settings.rs` (Language + Appearance sections)
+- `crates/aira-gui/src/main.rs` (init locale + theme)
+- `crates/aira-gui/Cargo.toml` (sys-locale, dark-light deps)
+- `mobile/android/app/build.gradle.kts` (signingConfigs)
+- `.github/workflows/release.yml` (Android keystore decode)
+- `.cargo/audit.toml`, `deny.toml` (убрать RUSTSEC-2025-0144)
+- `docs/INSTALL.md` (upgrade notes для Android)
+
+**Sequencing:**
+1. Phase A (ml-dsa) — неделя, требует внимания к крипто-API.
+2. Phase B (Android signing) — 1-2 дня, но требует GitHub Secrets.
+3. Phase C (i18n) — 4-5 дней: инфраструктура + en/ru + остальные 8 параллельно.
+4. Phase D (themes) — 2-3 дня.
+5. Phase E (UX) — 3-4 дня: contacts → chat → polish.
+6. Release v0.3.6.
+
 ### Milestone 10 — Mobile: Android (v0.3, 3-4 недели)
 
 1. `aira-ffi/` — UniFFI биндинги
