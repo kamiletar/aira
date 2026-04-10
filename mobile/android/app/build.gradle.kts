@@ -76,7 +76,7 @@ dependencies {
     implementation("androidx.core:core-ktx:1.15.0")
 
     // UnifiedPush (decentralized push notifications)
-    implementation("org.unifiedpush.android:connector:2.4.0")
+    implementation("org.unifiedpush.android:connector:3.3.2")
 
     // Firebase Cloud Messaging (fallback push)
     implementation("com.google.firebase:firebase-messaging-ktx:24.1.0")
