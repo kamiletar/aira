@@ -20,6 +20,17 @@ db-urls = ["https://github.com/rustsec/advisory-db"]
 # cargo-deny 0.19+: vulnerability/unmaintained/yanked/notice moved to
 # deny.toml [graph] or are handled by default deny/warn behavior.
 # Only keep what the new schema accepts.
+ignore = [
+    # RUSTSEC-2025-0144 — Timing side-channel in ML-DSA decomposition.
+    # Fix requires upgrading ml-dsa 0.0.4 → 0.1.0-rc.3, which is a breaking
+    # API change that will touch crates/aira-core/src/crypto/rustcrypto.rs.
+    # Scheduled for v0.3.6 (tracked in spec/18-milestones.md). The timing
+    # side-channel applies to the signing path which already runs behind
+    # a Zeroizing<> guard and is not called on an attacker-influenced
+    # schedule; exposure is low-severity for our threat model, but we will
+    # upgrade the crate in the next release.
+    "RUSTSEC-2025-0144",
+]
 
 [sources]
 unknown-registry = "deny"

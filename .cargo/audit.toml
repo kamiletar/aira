@@ -1,0 +1,13 @@
+# cargo-audit configuration.
+#
+# See https://github.com/rustsec/rustsec/tree/main/cargo-audit for the
+# schema. Keep the ignore list in sync with deny.toml [advisories].
+
+[advisories]
+ignore = [
+    # RUSTSEC-2025-0144 — Timing side-channel in ML-DSA decomposition.
+    # Requires ml-dsa 0.0.4 → 0.1.0-rc.3 (breaking API change). Scheduled
+    # for v0.3.6. Low severity for our threat model because signing runs
+    # behind Zeroizing<> and is not called on attacker-influenced timing.
+    "RUSTSEC-2025-0144",
+]
