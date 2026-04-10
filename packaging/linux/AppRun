@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# AppImage entry point. Adds the bundled bin dir to PATH so the GUI's
+# locate_daemon_binary() can find aira-daemon via sibling-of-current-exe
+# lookup (current_exe() resolves to .../usr/bin/aira-gui inside the
+# mounted AppImage, and aira-daemon sits next to it).
+HERE="$(dirname "$(readlink -f "${0}")")"
+export PATH="$HERE/usr/bin:$PATH"
+# LD_LIBRARY_PATH to pick up bundled GTK / etc. that linuxdeploy copies
+# into usr/lib.
+export LD_LIBRARY_PATH="$HERE/usr/lib:${LD_LIBRARY_PATH:-}"
+exec "$HERE/usr/bin/aira-gui" "$@"

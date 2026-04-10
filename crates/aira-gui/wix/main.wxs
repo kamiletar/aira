@@ -1,0 +1,154 @@
+<?xml version='1.0' encoding='windows-1252'?>
+<!--
+  Aira WiX installer template (per-user install, no elevation).
+
+  Bundles three binaries from target/release into [INSTALLDIR]:
+    - aira-gui.exe      (egui/eframe desktop UI — main application)
+    - aira-daemon.exe   (background IPC daemon — sibling so
+                         daemon_manager::locate_daemon_binary() finds it)
+    - aira.exe          (ratatui CLI — optional power-user front-end)
+
+  Adds:
+    - Start Menu shortcut to aira-gui.exe
+    - Desktop shortcut to aira-gui.exe
+    - Upgrade logic keyed on UpgradeCode
+
+  Not signed. SmartScreen will warn on first run until we get a code
+  signing certificate (tracked in docs/INSTALL.md).
+-->
+
+<?if $(sys.BUILDARCH) = x64 or $(sys.BUILDARCH) = arm64 ?>
+    <?define PlatformProgramFilesFolder = "ProgramFiles64Folder" ?>
+<?else ?>
+    <?define PlatformProgramFilesFolder = "ProgramFilesFolder" ?>
+<?endif ?>
+
+<Wix xmlns='http://schemas.microsoft.com/wix/2006/wi'>
+
+    <Product
+        Id='*'
+        Name='Aira'
+        UpgradeCode='322A8F5E-E888-4D32-8697-F25376B2C31D'
+        Manufacturer='Aira contributors'
+        Language='1033'
+        Codepage='1252'
+        Version='$(var.Version)'>
+
+        <Package Id='*'
+            Keywords='Installer'
+            Description='Aira — post-quantum P2P messenger (desktop)'
+            Manufacturer='Aira contributors'
+            InstallerVersion='450'
+            Languages='1033'
+            Compressed='yes'
+            InstallScope='perMachine'
+            SummaryCodepage='1252'
+            />
+
+        <MajorUpgrade
+            Schedule='afterInstallInitialize'
+            DowngradeErrorMessage='A newer version of [ProductName] is already installed. Setup will now exit.'/>
+
+        <Media Id='1' Cabinet='media1.cab' EmbedCab='yes' DiskPrompt='CD-ROM #1'/>
+        <Property Id='DiskPrompt' Value='Aira Installation'/>
+
+        <Directory Id='TARGETDIR' Name='SourceDir'>
+            <Directory Id='$(var.PlatformProgramFilesFolder)' Name='PFiles'>
+                <Directory Id='APPLICATIONFOLDER' Name='Aira'>
+
+                    <!-- GUI — the primary binary. Keeps the Start Menu
+                         shortcut and owns the KeyPath of the component. -->
+                    <Component Id='AiraGuiExe' Guid='8F1A0E6E-5D1C-4B2D-9F1A-2E4C9B8D1F01'>
+                        <File
+                            Id='AiraGuiExeFile'
+                            Name='aira-gui.exe'
+                            DiskId='1'
+                            Source='$(var.CargoTargetBinDir)\aira-gui.exe'
+                            KeyPath='yes'>
+                            <Shortcut
+                                Id='StartMenuShortcut'
+                                Directory='ProgramMenuDir'
+                                Name='Aira'
+                                WorkingDirectory='APPLICATIONFOLDER'
+                                Advertise='yes'/>
+                            <Shortcut
+                                Id='DesktopShortcut'
+                                Directory='DesktopFolder'
+                                Name='Aira'
+                                WorkingDirectory='APPLICATIONFOLDER'
+                                Advertise='yes'/>
+                        </File>
+                    </Component>
+
+                    <!-- Background IPC daemon. Must sit next to aira-gui.exe
+                         so locate_daemon_binary() finds it via current_exe
+                         sibling lookup. -->
+                    <Component Id='AiraDaemonExe' Guid='8F1A0E6E-5D1C-4B2D-9F1A-2E4C9B8D1F02'>
+                        <File
+                            Id='AiraDaemonExeFile'
+                            Name='aira-daemon.exe'
+                            DiskId='1'
+                            Source='$(var.CargoTargetBinDir)\aira-daemon.exe'
+                            KeyPath='yes'/>
+                    </Component>
+
+                    <!-- TUI (ratatui) — optional for power users / debugging. -->
+                    <Component Id='AiraCliExe' Guid='8F1A0E6E-5D1C-4B2D-9F1A-2E4C9B8D1F03'>
+                        <File
+                            Id='AiraCliExeFile'
+                            Name='aira.exe'
+                            DiskId='1'
+                            Source='$(var.CargoTargetBinDir)\aira.exe'
+                            KeyPath='yes'/>
+                    </Component>
+
+                </Directory>
+            </Directory>
+
+            <!-- Start Menu -->
+            <Directory Id='ProgramMenuFolder' Name='Programs'>
+                <Directory Id='ProgramMenuDir' Name='Aira'>
+                    <Component Id='ProgramMenuDir' Guid='8F1A0E6E-5D1C-4B2D-9F1A-2E4C9B8D1F04'>
+                        <RemoveFolder Id='ProgramMenuDir' On='uninstall'/>
+                        <RegistryValue
+                            Root='HKCU'
+                            Key='Software\[Manufacturer]\[ProductName]'
+                            Type='string'
+                            Value=''
+                            KeyPath='yes'/>
+                    </Component>
+                </Directory>
+            </Directory>
+
+            <!-- Desktop shortcut target -->
+            <Directory Id='DesktopFolder' Name='Desktop'/>
+        </Directory>
+
+        <Feature
+            Id='Binaries'
+            Title='Application'
+            Description='Installs the Aira desktop GUI, IPC daemon, and CLI.'
+            Level='1'
+            ConfigurableDirectory='APPLICATIONFOLDER'
+            AllowAdvertise='no'
+            Display='expand'
+            Absent='disallow'>
+            <ComponentRef Id='AiraGuiExe'/>
+            <ComponentRef Id='AiraDaemonExe'/>
+            <ComponentRef Id='AiraCliExe'/>
+            <ComponentRef Id='ProgramMenuDir'/>
+        </Feature>
+
+        <SetProperty Id='ARPINSTALLLOCATION' Value='[APPLICATIONFOLDER]' After='CostFinalize'/>
+
+        <Property Id='ARPHELPLINK' Value='https://github.com/kamiletar/aira'/>
+        <Property Id='ARPURLINFOABOUT' Value='https://github.com/kamiletar/aira'/>
+
+        <UI>
+            <UIRef Id='WixUI_InstallDir'/>
+            <Property Id='WIXUI_INSTALLDIR' Value='APPLICATIONFOLDER'/>
+        </UI>
+
+    </Product>
+
+</Wix>

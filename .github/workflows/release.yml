@@ -87,6 +87,55 @@ jobs:
           $hash = (Get-FileHash "$staging.zip" -Algorithm SHA256).Hash.ToLower()
           "$hash  $staging.zip" | Out-File -Encoding ascii "$staging.zip.sha256"
 
+      - name: Build MSI installer (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $version = "${{ github.ref_name }}".TrimStart("v")
+          cargo install cargo-wix --version 0.3.9 --locked
+          # WiX v3 ships preinstalled on windows-latest runners. Point
+          # cargo-wix at it via the WIX env var.
+          $env:WIX = "C:\Program Files (x86)\WiX Toolset v3.14"
+          if (-not (Test-Path $env:WIX)) {
+            $env:WIX = (Get-ChildItem "C:\Program Files (x86)" -Filter "WiX*" | Select-Object -First 1).FullName
+          }
+          cargo wix -p aira-gui --no-build --nocapture `
+            --output "aira-$version-setup.msi"
+          $hash = (Get-FileHash "aira-$version-setup.msi" -Algorithm SHA256).Hash.ToLower()
+          "$hash  aira-$version-setup.msi" | Out-File -Encoding ascii "aira-$version-setup.msi.sha256"
+
+      - name: Build .dmg (macOS)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          # create-dmg is a nice-to-have; hdiutil fallback is built in.
+          brew install create-dmg || true
+          chmod +x scripts/bundle-macos.sh
+          ./scripts/bundle-macos.sh "${{ matrix.target }}" "$VERSION"
+          # Move the outputs to the repo root so the upload glob picks them up.
+          mv target/macos-bundle/Aira-*.dmg . 2>/dev/null || true
+          mv target/macos-bundle/Aira-*.dmg.sha256 . 2>/dev/null || true
+
+      - name: Build AppImage (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          # linuxdeploy + GTK plugin
+          wget -q https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage
+          wget -q https://github.com/linuxdeploy/linuxdeploy-plugin-gtk/raw/master/linuxdeploy-plugin-gtk.sh
+          chmod +x linuxdeploy-x86_64.AppImage linuxdeploy-plugin-gtk.sh
+          sudo mv linuxdeploy-x86_64.AppImage /usr/local/bin/linuxdeploy
+          sudo mv linuxdeploy-plugin-gtk.sh /usr/local/bin/linuxdeploy-plugin-gtk
+          # AppImages need libfuse2 on ubuntu 22.04+
+          sudo apt-get install -y libfuse2 || true
+
+          chmod +x scripts/bundle-appimage.sh
+          ./scripts/bundle-appimage.sh "$VERSION"
+          mv target/appimage/Aira-*.AppImage . 2>/dev/null || true
+          mv target/appimage/Aira-*.AppImage.sha256 . 2>/dev/null || true
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
@@ -94,6 +143,13 @@ jobs:
           path: |
             aira-*.${{ matrix.archive }}
             aira-*.${{ matrix.archive }}.sha256
+            aira-*-setup.msi
+            aira-*-setup.msi.sha256
+            Aira-*.dmg
+            Aira-*.dmg.sha256
+            Aira-*.AppImage
+            Aira-*.AppImage.sha256
+          if-no-files-found: ignore
 
   android:
     name: Build Android APK
@@ -207,4 +263,7 @@ jobs:
             artifacts/aira-*.tar.gz
             artifacts/aira-*.zip
             artifacts/aira-*.apk
+            artifacts/aira-*-setup.msi
+            artifacts/Aira-*.dmg
+            artifacts/Aira-*.AppImage
             artifacts/*.sha256

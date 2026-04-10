@@ -66,3 +66,13 @@ thiserror.workspace = true
 
 [target.'cfg(windows)'.build-dependencies]
 winres = "0.1"
+
+# WiX installer metadata — used by `cargo wix` to generate the MSI for
+# the Windows release build. The upgrade-guid is stable across releases
+# (tracked in wix/main.wxs) so MajorUpgrade replaces old installations.
+[package.metadata.wix]
+upgrade-guid = "322A8F5E-E888-4D32-8697-F25376B2C31D"
+path-guid = "CF7C23C8-C513-4F93-A985-1E7389FE6C83"
+name = "Aira"
+no-build = false
+eula = false

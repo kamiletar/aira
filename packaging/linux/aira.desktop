@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Aira
+Comment=Post-quantum P2P messenger
+Exec=aira-gui
+Icon=aira
+Terminal=false
+Categories=Network;InstantMessaging;
+StartupWMClass=Aira
