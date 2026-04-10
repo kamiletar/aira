@@ -127,6 +127,19 @@ impl MasterSeed {
         Ok((phrase, seed))
     }
 
+    /// Generate a new random 24-word BIP-39 mnemonic *without* deriving the seed.
+    ///
+    /// Unlike [`generate`], this skips the expensive Argon2id derivation
+    /// (~1-3s on desktop). Use it when you only need the phrase to display
+    /// in an onboarding UI or to hand off to another process (e.g. spawning
+    /// `aira-daemon` with `AIRA_SEED=<phrase>`) — the daemon will perform
+    /// its own derivation.
+    #[must_use]
+    pub fn generate_phrase_only() -> String {
+        let entropy: [u8; 32] = rand_entropy();
+        bip39_encode(&entropy)
+    }
+
     /// Derive a 32-byte subkey for a specific purpose.
     ///
     /// The `context` string must be unique per use-case (see `docs/KEY_CONTEXTS.md`).

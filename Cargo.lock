@@ -299,6 +299,7 @@ dependencies = [
  "tracing-subscriber",
  "tray-icon",
  "winres",
+ "zeroize",
 ]
 
 [[package]]

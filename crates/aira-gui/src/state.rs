@@ -378,6 +378,43 @@ impl GuiState {
             } => {
                 self.status_message = Some(format!("Sync completed: {messages_synced} messages"));
             }
+
+            // ─── Onboarding / connection lifecycle (Milestone 9.5) ──────
+            // These transition ConnectionState in a follow-up chunk (A4).
+            // Stub handling for now so GuiUpdate matches exhaustively.
+            GuiUpdate::OnboardingRequired => {
+                self.connected = false;
+                self.status_message = Some("First-run setup required".into());
+            }
+            GuiUpdate::SpawningDaemon => {
+                self.connected = false;
+                self.status_message = Some("Starting daemon...".into());
+            }
+            GuiUpdate::Reconnecting {
+                attempt,
+                next_in_ms,
+            } => {
+                self.connected = false;
+                self.status_message = Some(format!(
+                    "Reconnecting (attempt {attempt}, retry in {}s)...",
+                    next_in_ms / 1000
+                ));
+            }
+            GuiUpdate::DaemonSpawnFailed { reason, stderr: _ } => {
+                self.connected = false;
+                self.status_message = Some(format!("Daemon failed to start: {reason}"));
+            }
+            GuiUpdate::DaemonNotFound { expected_path } => {
+                self.connected = false;
+                self.status_message = Some(format!(
+                    "aira-daemon not found at {}",
+                    expected_path.display()
+                ));
+            }
+            GuiUpdate::KeychainUnavailable(err) => {
+                self.connected = false;
+                self.status_message = Some(format!("Keychain unavailable: {err}"));
+            }
         }
 
         notify

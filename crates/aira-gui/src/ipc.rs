@@ -16,9 +16,13 @@ use aira_daemon::types::{
 };
 use aira_storage::{ContactInfo, StoredMessage};
 use tokio::sync::mpsc;
+use zeroize::Zeroizing;
 
 /// Commands sent from the GUI to the IPC bridge.
-#[derive(Debug)]
+///
+/// `Debug` is implemented manually below so variants holding a
+/// `Zeroizing<String>` seed phrase redact the secret instead of leaking
+/// it via `{:?}` / `tracing::debug!`.
 #[allow(dead_code)]
 pub enum GuiCommand {
     /// Fetch the full contact list.
@@ -82,6 +86,123 @@ pub enum GuiCommand {
 
     /// Graceful shutdown.
     Shutdown,
+
+    // ─── Onboarding / connection lifecycle (Milestone 9.5) ──────────────
+    /// User completed the welcome flow with a new or imported seed phrase.
+    /// The bridge writes it to the OS keychain and then spawns the daemon.
+    CompleteOnboarding { phrase: Zeroizing<String> },
+    /// Retry connecting to the daemon (UI "Retry" button after `GaveUp`).
+    RetryConnection,
+    /// Wipe the stored seed phrase and return to the welcome flow.
+    /// Intended for the "Forgot password" / "Reset identity" path.
+    ResetIdentity,
+}
+
+impl std::fmt::Debug for GuiCommand {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::GetContacts => write!(f, "GetContacts"),
+            Self::GetMyAddress => write!(f, "GetMyAddress"),
+            Self::GetHistory { contact, limit } => f
+                .debug_struct("GetHistory")
+                .field("contact", contact)
+                .field("limit", limit)
+                .finish(),
+            Self::SendMessage { to, text } => f
+                .debug_struct("SendMessage")
+                .field("to", to)
+                .field("text.len", &text.len())
+                .finish(),
+            Self::AddContact { pubkey, alias } => f
+                .debug_struct("AddContact")
+                .field("pubkey", pubkey)
+                .field("alias", alias)
+                .finish(),
+            Self::RemoveContact { pubkey } => f
+                .debug_struct("RemoveContact")
+                .field("pubkey", pubkey)
+                .finish(),
+            Self::SetTtl { contact, ttl_secs } => f
+                .debug_struct("SetTtl")
+                .field("contact", contact)
+                .field("ttl_secs", ttl_secs)
+                .finish(),
+            Self::SendFile { to, path } => f
+                .debug_struct("SendFile")
+                .field("to", to)
+                .field("path", path)
+                .finish(),
+            Self::GetTransportMode => write!(f, "GetTransportMode"),
+            Self::SetTransportMode { mode } => f
+                .debug_struct("SetTransportMode")
+                .field("mode", mode)
+                .finish(),
+            Self::ExportBackup {
+                path,
+                include_messages,
+            } => f
+                .debug_struct("ExportBackup")
+                .field("path", path)
+                .field("include_messages", include_messages)
+                .finish(),
+            Self::ImportBackup { path } => f
+                .debug_struct("ImportBackup")
+                .field("path", path)
+                .finish(),
+            Self::CreateGroup { name, members } => f
+                .debug_struct("CreateGroup")
+                .field("name", name)
+                .field("members.len", &members.len())
+                .finish(),
+            Self::GetGroups => write!(f, "GetGroups"),
+            Self::GetGroupInfo { group_id } => f
+                .debug_struct("GetGroupInfo")
+                .field("group_id", group_id)
+                .finish(),
+            Self::SendGroupMessage { group_id, text } => f
+                .debug_struct("SendGroupMessage")
+                .field("group_id", group_id)
+                .field("text.len", &text.len())
+                .finish(),
+            Self::GetGroupHistory { group_id, limit } => f
+                .debug_struct("GetGroupHistory")
+                .field("group_id", group_id)
+                .field("limit", limit)
+                .finish(),
+            Self::GroupAddMember { group_id, member } => f
+                .debug_struct("GroupAddMember")
+                .field("group_id", group_id)
+                .field("member", member)
+                .finish(),
+            Self::GroupRemoveMember { group_id, member } => f
+                .debug_struct("GroupRemoveMember")
+                .field("group_id", group_id)
+                .field("member", member)
+                .finish(),
+            Self::LeaveGroup { group_id } => f
+                .debug_struct("LeaveGroup")
+                .field("group_id", group_id)
+                .finish(),
+            Self::GenerateLinkCode => write!(f, "GenerateLinkCode"),
+            Self::LinkDevice { code: _, device_name } => f
+                .debug_struct("LinkDevice")
+                .field("code", &"[REDACTED]")
+                .field("device_name", device_name)
+                .finish(),
+            Self::GetDevices => write!(f, "GetDevices"),
+            Self::UnlinkDevice { device_id } => f
+                .debug_struct("UnlinkDevice")
+                .field("device_id", device_id)
+                .finish(),
+            Self::Shutdown => write!(f, "Shutdown"),
+            Self::CompleteOnboarding { .. } => f
+                .debug_struct("CompleteOnboarding")
+                .field("phrase", &"[REDACTED]")
+                .finish(),
+            Self::RetryConnection => write!(f, "RetryConnection"),
+            Self::ResetIdentity => write!(f, "ResetIdentity"),
+        }
+    }
 }
 
 /// Updates sent from the IPC bridge to the GUI.
@@ -175,6 +296,25 @@ pub enum GuiUpdate {
         device_id: [u8; 32],
         messages_synced: u32,
     },
+
+    // ─── Onboarding / connection lifecycle (Milestone 9.5) ──────────────
+    /// No seed phrase in the keychain — the GUI should show the welcome flow.
+    OnboardingRequired,
+    /// Daemon child process has been spawned; waiting for it to open the
+    /// IPC socket / pipe.
+    SpawningDaemon,
+    /// Lost connection; backing off before the next attempt.
+    Reconnecting { attempt: u32, next_in_ms: u64 },
+    /// Spawned daemon exited before we could connect.
+    DaemonSpawnFailed {
+        reason: String,
+        stderr: Option<String>,
+    },
+    /// `aira-daemon` binary not found (sibling of GUI or PATH).
+    DaemonNotFound { expected_path: PathBuf },
+    /// OS keychain is unavailable — usually headless Linux without
+    /// `gnome-keyring` / `KWallet` running.
+    KeychainUnavailable(String),
 }
 
 /// Convert a `GuiCommand` into a `DaemonRequest`.
@@ -258,6 +398,12 @@ fn command_to_request(cmd: &GuiCommand) -> Option<DaemonRequest> {
             device_id: *device_id,
         }),
         GuiCommand::Shutdown => Some(DaemonRequest::Shutdown),
+
+        // Lifecycle commands handled by the bridge itself, not forwarded
+        // to the daemon as requests.
+        GuiCommand::CompleteOnboarding { .. }
+        | GuiCommand::RetryConnection
+        | GuiCommand::ResetIdentity => None,
     }
 }
 
