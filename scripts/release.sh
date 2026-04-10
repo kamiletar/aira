@@ -37,17 +37,23 @@ echo "Releasing Aira $TAG..."
 # 1. Update workspace version
 sed -i "s/^version = \".*\"/version = \"${VERSION}\"/" Cargo.toml
 
-# 2. Refresh Cargo.lock
+# 2. Update Android version
+IFS='.' read -r MAJOR MINOR PATCH <<< "${VERSION%%-*}"
+VERSION_CODE=$((MAJOR * 10000 + MINOR * 100 + PATCH))
+sed -i "s/versionCode = .*/versionCode = ${VERSION_CODE}/" mobile/android/app/build.gradle.kts
+sed -i "s/versionName = \".*\"/versionName = \"${VERSION}\"/" mobile/android/app/build.gradle.kts
+
+# 3. Refresh Cargo.lock
 cargo check --workspace 2>/dev/null
 
-# 3. Commit
-git add Cargo.toml Cargo.lock
+# 4. Commit
+git add Cargo.toml Cargo.lock mobile/android/app/build.gradle.kts
 git commit -m "chore: release ${TAG}"
 
-# 4. Tag
+# 5. Tag
 git tag -a "$TAG" -m "Release ${TAG}"
 
-# 5. Push
+# 6. Push
 echo "Pushing to origin..."
 git push origin HEAD
 git push origin "$TAG"

@@ -21,7 +21,9 @@ Linux jobs install system deps for egui: `libgtk-3-dev`, `libxdo-dev`, `libxcb-*
 
 ### Release (`.github/workflows/release.yml`)
 
-Triggers on tag push `v*`. Builds for 4 targets:
+Triggers on tag push `v*`. Two parallel job groups:
+
+**Desktop builds** (matrix):
 
 | Target | Runner | Archive |
 |--------|--------|---------|
@@ -32,11 +34,17 @@ Triggers on tag push `v*`. Builds for 4 targets:
 
 Each archive contains: `aira` (CLI), `aira-daemon`, `aira-gui` + SHA256 checksum.
 
+**Android build:**
+- Cross-compiles `libaira_ffi.so` for `aarch64` + `x86_64`
+- Generates Kotlin bindings via uniffi-bindgen
+- Builds release APK with version synced from tag
+- Outputs: `aira-{VERSION}-android.apk` + SHA256
+
 Creates a GitHub Release with auto-generated release notes from conventional commits.
 
-### Android (`.github/workflows/android.yml`)
+### Android CI (`.github/workflows/android.yml`)
 
-Separate workflow for Android FFI builds. Triggers on FFI/mobile path changes.
+Separate workflow for Android debug builds on FFI/mobile path changes (PR/push).
 
 ## How to Release
 
@@ -47,10 +55,11 @@ Separate workflow for Android FFI builds. Triggers on FFI/mobile path changes.
 
 The script:
 1. Updates `version` in workspace `Cargo.toml` (all crates inherit it)
-2. Runs `cargo check` to update `Cargo.lock`
-3. Commits: `chore: release v0.4.0`
-4. Creates annotated tag `v0.4.0`
-5. Pushes commit + tag → triggers release workflow
+2. Updates `versionName` and `versionCode` in `mobile/android/app/build.gradle.kts`
+3. Runs `cargo check` to update `Cargo.lock`
+4. Commits: `chore: release v0.4.0`
+5. Creates annotated tag `v0.4.0`
+6. Pushes commit + tag → triggers release workflow
 
 ## Website Integration
 
