@@ -7,6 +7,17 @@
 
 #![warn(clippy::all, clippy::pedantic)]
 #![allow(clippy::module_name_repetitions)]
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::implicit_clone,
+        clippy::useless_vec,
+        clippy::redundant_closure,
+        clippy::unnecessary_get_then_check
+    )
+)]
 
 use std::io;
 use std::time::Duration;

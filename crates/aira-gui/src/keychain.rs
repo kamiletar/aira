@@ -186,24 +186,27 @@ mod tests {
     // unlocked keychain.
 
     #[test]
-    #[ignore]
+    #[ignore = "requires a running OS keychain (Secret Service / Credential Manager)"]
     fn plain_roundtrip() {
         let phrase = Zeroizing::new("test plain phrase 123".to_string());
         store_plain(&phrase).expect("store");
         match load_seed().expect("load") {
             Some(StoredSeed::Plain(loaded)) => assert_eq!(loaded.as_str(), phrase.as_str()),
-            other => panic!("expected Plain, got {other:?}", other = match other {
-                Some(StoredSeed::Plain(_)) => "Plain",
-                Some(StoredSeed::Vault(_)) => "Vault",
-                None => "None",
-            }),
+            other => panic!(
+                "expected Plain, got {other:?}",
+                other = match other {
+                    Some(StoredSeed::Plain(_)) => "Plain",
+                    Some(StoredSeed::Vault(_)) => "Vault",
+                    None => "None",
+                }
+            ),
         }
         clear_all().expect("clear");
         assert!(load_seed().expect("load after clear").is_none());
     }
 
     #[test]
-    #[ignore]
+    #[ignore = "requires a running OS keychain (Secret Service / Credential Manager)"]
     fn vault_roundtrip() {
         let blob = vec![1, 2, 3, 4, 5];
         store_vault(&blob).expect("store");
@@ -215,7 +218,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore]
+    #[ignore = "requires a running OS keychain (Secret Service / Credential Manager)"]
     fn store_plain_removes_vault_and_vice_versa() {
         store_vault(&[9, 9, 9]).expect("store vault");
         let phrase = Zeroizing::new("abc".to_string());

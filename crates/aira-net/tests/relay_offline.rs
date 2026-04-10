@@ -8,7 +8,6 @@
 //! 5. Bob acks, relay mailbox is emptied
 
 use std::sync::Arc;
-use std::time::Duration;
 
 use aira_core::proto::EncryptedEnvelope;
 use aira_net::endpoint::AiraEndpoint;

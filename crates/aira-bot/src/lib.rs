@@ -32,6 +32,16 @@
 //! ```
 
 #![warn(clippy::all, clippy::pedantic)]
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        clippy::items_after_statements
+    )
+)]
 
 mod context;
 mod runner;

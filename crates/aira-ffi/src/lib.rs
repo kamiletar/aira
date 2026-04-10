@@ -11,6 +11,15 @@
 #![allow(clippy::doc_markdown)]
 #![allow(clippy::missing_errors_doc)]
 #![allow(clippy::needless_pass_by_value)]
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::useless_vec,
+        clippy::implicit_clone
+    )
+)]
 
 pub mod callbacks;
 pub mod runtime;

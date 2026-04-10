@@ -210,7 +210,7 @@ mod tests {
     fn make_group_msg(id_byte: u8, ts: u64) -> StoredMessage {
         StoredMessage {
             id: [id_byte; 16],
-            sender_is_self: id_byte % 2 == 0,
+            sender_is_self: id_byte.is_multiple_of(2),
             payload_bytes: vec![id_byte],
             timestamp_micros: ts,
             ttl_secs: None,

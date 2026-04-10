@@ -183,7 +183,11 @@ fn render_new_identity(ui: &mut Ui, state: &mut OnboardingState) -> Option<GuiCo
                 .color(theme::TEXT_PRIMARY)
                 .strong(),
         )
-        .fill(if enabled { theme::ACCENT } else { theme::BG_CARD });
+        .fill(if enabled {
+            theme::ACCENT
+        } else {
+            theme::BG_CARD
+        });
         if ui.add_enabled(enabled, button).clicked() {
             if let Some(phrase) = state.take_generated() {
                 command = Some(GuiCommand::CompleteOnboarding { phrase });

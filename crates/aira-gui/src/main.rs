@@ -18,6 +18,18 @@
 #![allow(clippy::module_name_repetitions)]
 #![allow(clippy::too_many_lines)]
 #![allow(clippy::unnecessary_wraps)]
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::get_first,
+        clippy::items_after_statements,
+        clippy::useless_vec,
+        clippy::redundant_closure,
+        clippy::redundant_closure_for_method_calls
+    )
+)]
 
 mod app;
 mod daemon_manager;

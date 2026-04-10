@@ -159,10 +159,9 @@ impl std::fmt::Debug for GuiCommand {
                 .field("path", path)
                 .field("include_messages", include_messages)
                 .finish(),
-            Self::ImportBackup { path } => f
-                .debug_struct("ImportBackup")
-                .field("path", path)
-                .finish(),
+            Self::ImportBackup { path } => {
+                f.debug_struct("ImportBackup").field("path", path).finish()
+            }
             Self::CreateGroup { name, members } => f
                 .debug_struct("CreateGroup")
                 .field("name", name)
@@ -198,7 +197,10 @@ impl std::fmt::Debug for GuiCommand {
                 .field("group_id", group_id)
                 .finish(),
             Self::GenerateLinkCode => write!(f, "GenerateLinkCode"),
-            Self::LinkDevice { code: _, device_name } => f
+            Self::LinkDevice {
+                code: _,
+                device_name,
+            } => f
                 .debug_struct("LinkDevice")
                 .field("code", &"[REDACTED]")
                 .field("device_name", device_name)
@@ -628,7 +630,8 @@ impl Bridge {
                 }
             }
             Err(e) => {
-                self.send(GuiUpdate::KeychainUnavailable(e.to_string())).await;
+                self.send(GuiUpdate::KeychainUnavailable(e.to_string()))
+                    .await;
                 return false;
             }
         };
@@ -683,8 +686,7 @@ impl Bridge {
                 .await;
                 return false;
             }
-            tokio::time::sleep(std::time::Duration::from_millis(SPAWN_POLL_INTERVAL_MS))
-                .await;
+            tokio::time::sleep(std::time::Duration::from_millis(SPAWN_POLL_INTERVAL_MS)).await;
             if let Ok(pair) = DaemonClient::connect().await {
                 self.client = Some(pair.0);
                 self.events = Some(pair.1);
@@ -744,10 +746,8 @@ impl Bridge {
                     match crate::password_vault::unlock(blob, &password) {
                         Ok(phrase) => return Some(phrase),
                         Err(e) => {
-                            self.send(GuiUpdate::PasswordError(format!(
-                                "Unlock failed: {e}"
-                            )))
-                            .await;
+                            self.send(GuiUpdate::PasswordError(format!("Unlock failed: {e}")))
+                                .await;
                         }
                     }
                 }
@@ -923,8 +923,7 @@ impl Bridge {
             }
         }
         for _ in 0..SPAWN_POLL_MAX_ATTEMPTS {
-            tokio::time::sleep(std::time::Duration::from_millis(SPAWN_POLL_INTERVAL_MS))
-                .await;
+            tokio::time::sleep(std::time::Duration::from_millis(SPAWN_POLL_INTERVAL_MS)).await;
             if let Ok(pair) = DaemonClient::connect().await {
                 self.client = Some(pair.0);
                 self.events = Some(pair.1);
@@ -975,10 +974,8 @@ impl Bridge {
         let blob = match crate::keychain::load_seed() {
             Ok(Some(StoredSeed::Vault(b))) => b,
             Ok(Some(StoredSeed::Plain(_)) | None) => {
-                self.send(GuiUpdate::PasswordError(
-                    "no password to disable".into(),
-                ))
-                .await;
+                self.send(GuiUpdate::PasswordError("no password to disable".into()))
+                    .await;
                 return;
             }
             Err(e) => {
@@ -1005,11 +1002,7 @@ impl Bridge {
     }
 
     /// Verify old password, re-lock with the new one.
-    async fn handle_change_password(
-        &mut self,
-        old: &Zeroizing<String>,
-        new: &Zeroizing<String>,
-    ) {
+    async fn handle_change_password(&mut self, old: &Zeroizing<String>, new: &Zeroizing<String>) {
         use crate::keychain::StoredSeed;
         let Ok(Some(StoredSeed::Vault(blob))) = crate::keychain::load_seed() else {
             self.send(GuiUpdate::PasswordError(

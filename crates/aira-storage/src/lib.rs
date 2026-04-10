@@ -18,6 +18,15 @@
 
 #![deny(unsafe_code)]
 #![warn(clippy::all, clippy::pedantic)]
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss
+    )
+)]
 
 use std::path::Path;
 
@@ -192,8 +201,8 @@ mod tests {
     fn open_is_idempotent() {
         let dir = std::env::temp_dir().join(format!("aira-test-{}", rand::random::<u64>()));
         let key = Zeroizing::new([0x42u8; 32]);
-        let _s1 = Storage::open(&dir, key.clone()).expect("first open");
-        drop(_s1);
+        let s1 = Storage::open(&dir, key.clone()).expect("first open");
+        drop(s1);
         let _s2 = Storage::open(&dir, key).expect("second open");
     }
 }

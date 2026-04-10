@@ -144,10 +144,7 @@ pub fn lock(
 /// [`VaultError::Argon2`] on KDF failure, [`VaultError::Aead`] if the
 /// password is wrong or the ciphertext has been tampered with, or
 /// [`VaultError::NotUtf8`] if the decrypted bytes aren't valid UTF-8.
-pub fn unlock(
-    blob: &[u8],
-    password: &Zeroizing<String>,
-) -> Result<Zeroizing<String>, VaultError> {
+pub fn unlock(blob: &[u8], password: &Zeroizing<String>) -> Result<Zeroizing<String>, VaultError> {
     let vault: SeedVault = postcard::from_bytes(blob)?;
     if vault.version != VAULT_VERSION {
         return Err(VaultError::UnsupportedVersion(vault.version));

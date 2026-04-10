@@ -305,10 +305,13 @@ fn render_set_password_modal(ui: &mut Ui, state: &mut GuiState, commands: &mut V
                 if ui.button("Cancel").clicked() {
                     state.settings_security.reset();
                 }
-                let matches =
-                    state.settings_security.password_input == state.settings_security.confirm_input
-                        && !state.settings_security.password_input.is_empty();
-                if ui.add_enabled(matches, egui::Button::new("Enable")).clicked() {
+                let matches = state.settings_security.password_input
+                    == state.settings_security.confirm_input
+                    && !state.settings_security.password_input.is_empty();
+                if ui
+                    .add_enabled(matches, egui::Button::new("Enable"))
+                    .clicked()
+                {
                     let password = Zeroizing::new(state.settings_security.password_input.clone());
                     commands.push(GuiCommand::EnablePasswordProtection { password });
                     // The bridge will emit PasswordProtectionChanged (→ reset).
@@ -316,18 +319,13 @@ fn render_set_password_modal(ui: &mut Ui, state: &mut GuiState, commands: &mut V
                     scrub(&mut state.settings_security.password_input);
                     scrub(&mut state.settings_security.confirm_input);
                 } else if !matches && !state.settings_security.password_input.is_empty() {
-                    state.settings_security.error =
-                        Some("Passwords do not match".to_string());
+                    state.settings_security.error = Some("Passwords do not match".to_string());
                 }
             });
         });
 }
 
-fn render_change_password_modal(
-    ui: &mut Ui,
-    state: &mut GuiState,
-    commands: &mut Vec<GuiCommand>,
-) {
+fn render_change_password_modal(ui: &mut Ui, state: &mut GuiState, commands: &mut Vec<GuiCommand>) {
     ui.add_space(theme::PANEL_PADDING);
     egui::Frame::none()
         .fill(theme::BG_CARD)
@@ -381,7 +379,10 @@ fn render_change_password_modal(
                     == state.settings_security.confirm_input
                     && !state.settings_security.password_input.is_empty()
                     && !state.settings_security.old_password_input.is_empty();
-                if ui.add_enabled(matches, egui::Button::new("Change")).clicked() {
+                if ui
+                    .add_enabled(matches, egui::Button::new("Change"))
+                    .clicked()
+                {
                     let old = Zeroizing::new(state.settings_security.old_password_input.clone());
                     let new = Zeroizing::new(state.settings_security.password_input.clone());
                     commands.push(GuiCommand::ChangePassword { old, new });
@@ -443,7 +444,10 @@ fn render_disable_password_modal(
                     state.settings_security.reset();
                 }
                 let enabled = !state.settings_security.password_input.is_empty();
-                if ui.add_enabled(enabled, egui::Button::new("Disable")).clicked() {
+                if ui
+                    .add_enabled(enabled, egui::Button::new("Disable"))
+                    .clicked()
+                {
                     let password = Zeroizing::new(state.settings_security.password_input.clone());
                     commands.push(GuiCommand::DisablePasswordProtection { password });
                     scrub(&mut state.settings_security.password_input);

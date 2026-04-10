@@ -173,10 +173,7 @@ pub fn spawn(seed: &Zeroizing<String>) -> Result<DaemonHandle, SpawnError> {
     })?;
 
     // `cmd` (and its internal env map copy of AIRA_SEED) is dropped here.
-    tracing::info!(
-        "daemon_manager: spawned aira-daemon (pid={})",
-        child.id()
-    );
+    tracing::info!("daemon_manager: spawned aira-daemon (pid={})", child.id());
 
     Ok(DaemonHandle {
         child: Some(child),

@@ -38,8 +38,6 @@ pub fn notify_group_message(group_name: &str, sender_alias: &str, text: &str) {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     #[test]
     fn notification_truncation() {
         // Just test the truncation logic, not the actual notification

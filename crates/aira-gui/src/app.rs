@@ -211,11 +211,9 @@ impl eframe::App for AiraApp {
                             ConnectionStatus::Connected => {
                                 (theme::SUCCESS, "Online".to_string(), false)
                             }
-                            ConnectionStatus::Connecting => (
-                                theme::STATUS_OFFLINE,
-                                "Connecting...".to_string(),
-                                false,
-                            ),
+                            ConnectionStatus::Connecting => {
+                                (theme::STATUS_OFFLINE, "Connecting...".to_string(), false)
+                            }
                             ConnectionStatus::OnboardingRequired => {
                                 // Unreachable here (early return above),
                                 // but keep the match exhaustive.
@@ -235,11 +233,7 @@ impl eframe::App for AiraApp {
                                 next_in_ms,
                             } => (
                                 theme::STATUS_OFFLINE,
-                                format!(
-                                    "Reconnecting ({}, {}s)",
-                                    attempt,
-                                    next_in_ms / 1000
-                                ),
+                                format!("Reconnecting ({}, {}s)", attempt, next_in_ms / 1000),
                                 false,
                             ),
                             ConnectionStatus::Disconnected { can_retry, .. } => {

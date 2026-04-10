@@ -18,7 +18,22 @@
 
 #![deny(unsafe_code)]
 #![warn(clippy::all, clippy::pedantic)]
-#![forbid(clippy::unwrap_used)]
+// `unwrap_used` is forbidden in production code but relaxed for tests,
+// where terse `.unwrap()` is idiomatic and panic-on-failure is the
+// desired behavior. `forbid` cannot be overridden, so we use `deny` here
+// and add `#[allow]` to test modules as needed.
+#![deny(clippy::unwrap_used)]
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        clippy::cast_precision_loss,
+        clippy::cast_possible_wrap
+    )
+)]
 
 mod bip39_wordlist;
 pub mod crypto;

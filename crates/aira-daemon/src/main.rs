@@ -8,6 +8,14 @@
 
 #![warn(clippy::all, clippy::pedantic)]
 #![allow(clippy::module_name_repetitions)]
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::cast_possible_truncation
+    )
+)]
 
 use std::path::PathBuf;
 use std::sync::Arc;

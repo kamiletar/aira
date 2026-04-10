@@ -231,10 +231,7 @@ mod tests {
         let mut state = OnboardingState::default();
         state.switch_to_import();
         assert!(state.validate_import().is_none());
-        assert_eq!(
-            state.validation_error.as_deref(),
-            Some("Phrase is empty")
-        );
+        assert_eq!(state.validation_error.as_deref(), Some("Phrase is empty"));
     }
 
     #[test]

@@ -214,15 +214,11 @@ mod tests {
         bad_ct[0] ^= 0xFF;
 
         // ML-KEM uses implicit rejection: decaps succeeds but returns
-        // a different (random) shared secret
-        let decapped = hybrid_decaps(&x_sk, &m_dk, &output.x25519_ct, &bad_ct);
-        match decapped {
-            Ok(ss) => {
-                let a: &[u8; 32] = &output.shared_secret;
-                let b: &[u8; 32] = &ss;
-                assert_ne!(a, b, "tampered CT must produce different shared secret");
-            }
-            Err(_) => {} // Also acceptable
+        // a different (random) shared secret. Failure is also acceptable.
+        if let Ok(ss) = hybrid_decaps(&x_sk, &m_dk, &output.x25519_ct, &bad_ct) {
+            let a: &[u8; 32] = &output.shared_secret;
+            let b: &[u8; 32] = &ss;
+            assert_ne!(a, b, "tampered CT must produce different shared secret");
         }
     }
 }
