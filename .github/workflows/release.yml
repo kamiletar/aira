@@ -25,7 +25,7 @@ jobs:
           - runner: macos-latest
             target: aarch64-apple-darwin
             archive: tar.gz
-          - runner: macos-13
+          - runner: macos-latest
             target: x86_64-apple-darwin
             archive: tar.gz
           - runner: windows-latest
@@ -51,6 +51,7 @@ jobs:
             libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev
 
       - name: Build release binaries
+        shell: bash
         run: |
           cargo build --release --target ${{ matrix.target }} \
             -p aira-cli -p aira-daemon -p aira-gui
