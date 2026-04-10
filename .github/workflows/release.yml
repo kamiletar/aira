@@ -162,9 +162,12 @@ jobs:
           sed -i "s/versionName = \".*\"/versionName = \"${VERSION}\"/" \
             mobile/android/app/build.gradle.kts
 
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+
       - name: Build release APK
         working-directory: mobile/android
-        run: ./gradlew assembleRelease
+        run: gradle assembleRelease
 
       - name: Package APK
         shell: bash
