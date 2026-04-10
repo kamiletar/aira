@@ -137,7 +137,7 @@ jobs:
             mobile/android/app/src/main/jniLibs/x86_64/
 
       - name: Install uniffi-bindgen
-        run: cargo install uniffi_bindgen_cli@0.28.0
+        run: cargo install uniffi_bindgen@0.28.0
 
       - name: Generate Kotlin bindings
         run: |
