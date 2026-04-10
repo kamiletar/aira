@@ -160,13 +160,26 @@ mod tests {
         let mut state = OnboardingState::default();
         state.generate();
         let printed = format!("{state:?}");
-        // The phrase must not appear verbatim anywhere in the debug output.
-        let phrase = state.generated_phrase.as_ref().unwrap().as_str().to_string();
+        // The redaction marker must be present for the phrase field.
         assert!(printed.contains("[REDACTED]"));
-        for word in phrase.split_whitespace() {
+        // The full phrase must not appear verbatim.
+        let phrase = state
+            .generated_phrase
+            .as_ref()
+            .unwrap()
+            .as_str()
+            .to_string();
+        assert!(!printed.contains(&phrase));
+        // Any 3-word consecutive slice must not leak either (catches partial
+        // serialization bugs). 3 words is long enough to avoid false
+        // positives with BIP-39 vocabulary words appearing in debug field
+        // names like `written_down_confirmed`.
+        let words: Vec<&str> = phrase.split_whitespace().collect();
+        for window in words.windows(3) {
+            let slice = window.join(" ");
             assert!(
-                !printed.contains(word),
-                "Debug output leaked phrase word: {word}"
+                !printed.contains(&slice),
+                "Debug output leaked phrase slice: {slice}"
             );
         }
     }

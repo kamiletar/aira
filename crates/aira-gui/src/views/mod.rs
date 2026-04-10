@@ -9,7 +9,5 @@ pub mod groups;
 pub mod identity;
 pub mod settings;
 pub mod transfers;
-// Welcome view is rendered by `app.rs` once the IPC bridge (chunk A5/A6)
-// emits `GuiUpdate::OnboardingRequired`. Until then the code is unreachable.
-#[allow(dead_code)]
+pub mod unlock;
 pub mod welcome;

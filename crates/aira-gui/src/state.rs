@@ -50,6 +50,48 @@ pub struct TransferProgress {
     pub total: u64,
 }
 
+/// Transient form state for the Settings → Security panel. Holds the
+/// currently-open modal (if any) plus the password buffers the user is
+/// typing into. Buffers are cleared when a modal is dismissed or a
+/// command is dispatched so passwords don't linger in state.
+#[derive(Debug, Default)]
+pub struct SecurityFormState {
+    pub modal: SecurityModal,
+    pub password_input: String,
+    pub confirm_input: String,
+    pub old_password_input: String,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum SecurityModal {
+    #[default]
+    None,
+    SetPassword,
+    ChangePassword,
+    DisablePassword,
+}
+
+impl SecurityFormState {
+    /// Overwrite and clear all password buffers, reset the modal.
+    pub fn reset(&mut self) {
+        for b in unsafe { self.password_input.as_bytes_mut() } {
+            *b = 0;
+        }
+        self.password_input.clear();
+        for b in unsafe { self.confirm_input.as_bytes_mut() } {
+            *b = 0;
+        }
+        self.confirm_input.clear();
+        for b in unsafe { self.old_password_input.as_bytes_mut() } {
+            *b = 0;
+        }
+        self.old_password_input.clear();
+        self.error = None;
+        self.modal = SecurityModal::None;
+    }
+}
+
 /// Fine-grained connection status used to drive the status bar and
 /// welcome routing. `connected: bool` is kept alongside it for
 /// backwards compatibility with existing code paths
@@ -61,6 +103,9 @@ pub enum ConnectionStatus {
     Connecting,
     /// No seed phrase in the keychain — render the welcome/onboarding view.
     OnboardingRequired,
+    /// Encrypted vault blob in the keychain — render the unlock view and
+    /// wait for the user password.
+    Locked { last_error: Option<String> },
     /// Daemon child has been spawned; waiting for its IPC socket.
     SpawningDaemon,
     /// Connected to the daemon; normal operation.
@@ -85,6 +130,14 @@ pub struct GuiState {
     pub conn_status: ConnectionStatus,
     /// Onboarding flow state, used when `conn_status == OnboardingRequired`.
     pub onboarding: crate::onboarding::OnboardingState,
+    /// Whether the identity is stored as a password-protected vault.
+    /// Drives the Settings → Security toggle label and unlock routing.
+    pub identity_password_protected: bool,
+    /// In-flight password input buffer for the Unlock screen. Cleared and
+    /// wrapped in `Zeroizing` when the submit command is dispatched.
+    pub unlock_input: String,
+    /// Transient buffers for the Settings Security section.
+    pub settings_security: SecurityFormState,
     /// Last error or status message.
     pub status_message: Option<String>,
 
@@ -167,6 +220,9 @@ impl GuiState {
             connected: false,
             conn_status: ConnectionStatus::Connecting,
             onboarding: crate::onboarding::OnboardingState::default(),
+            identity_password_protected: false,
+            unlock_input: String::new(),
+            settings_security: SecurityFormState::default(),
             status_message: Some("Connecting to daemon...".into()),
             active_view: View::Contacts,
             previous_view: None,
@@ -471,6 +527,32 @@ impl GuiState {
                     can_retry: false,
                 };
                 self.status_message = Some(reason);
+            }
+
+            // ─── Password vault (Phase B) ───────────────────────────────
+            GuiUpdate::PasswordPromptRequired => {
+                self.connected = false;
+                self.identity_password_protected = true;
+                self.conn_status = ConnectionStatus::Locked { last_error: None };
+                self.status_message = None;
+            }
+            GuiUpdate::PasswordError(err) => {
+                // Show in both the unlock screen (via conn_status) and in
+                // the Settings security modal (via settings_security.error).
+                if let ConnectionStatus::Locked { last_error } = &mut self.conn_status {
+                    *last_error = Some(err.clone());
+                }
+                self.settings_security.error = Some(err.clone());
+                self.status_message = Some(err);
+            }
+            GuiUpdate::PasswordProtectionChanged(protected) => {
+                self.identity_password_protected = protected;
+                self.settings_security.reset();
+                self.status_message = Some(if protected {
+                    "Password protection enabled".into()
+                } else {
+                    "Password protection disabled".into()
+                });
             }
         }
 

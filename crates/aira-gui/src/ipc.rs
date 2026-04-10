@@ -96,6 +96,20 @@ pub enum GuiCommand {
     /// Wipe the stored seed phrase and return to the welcome flow.
     /// Intended for the "Forgot password" / "Reset identity" path.
     ResetIdentity,
+
+    // ─── Password vault (Phase B) ───────────────────────────────────────
+    /// User submitted their vault password on the Unlock screen.
+    SubmitPassword { password: Zeroizing<String> },
+    /// Settings → Security: enable password protection with this password.
+    EnablePasswordProtection { password: Zeroizing<String> },
+    /// Settings → Security: disable password protection. The user must
+    /// re-enter the current password so we can decrypt and re-store plain.
+    DisablePasswordProtection { password: Zeroizing<String> },
+    /// Settings → Security: change the password (re-lock with new).
+    ChangePassword {
+        old: Zeroizing<String>,
+        new: Zeroizing<String>,
+    },
 }
 
 impl std::fmt::Debug for GuiCommand {
@@ -201,6 +215,23 @@ impl std::fmt::Debug for GuiCommand {
                 .finish(),
             Self::RetryConnection => write!(f, "RetryConnection"),
             Self::ResetIdentity => write!(f, "ResetIdentity"),
+            Self::SubmitPassword { .. } => f
+                .debug_struct("SubmitPassword")
+                .field("password", &"[REDACTED]")
+                .finish(),
+            Self::EnablePasswordProtection { .. } => f
+                .debug_struct("EnablePasswordProtection")
+                .field("password", &"[REDACTED]")
+                .finish(),
+            Self::DisablePasswordProtection { .. } => f
+                .debug_struct("DisablePasswordProtection")
+                .field("password", &"[REDACTED]")
+                .finish(),
+            Self::ChangePassword { .. } => f
+                .debug_struct("ChangePassword")
+                .field("old", &"[REDACTED]")
+                .field("new", &"[REDACTED]")
+                .finish(),
         }
     }
 }
@@ -315,6 +346,17 @@ pub enum GuiUpdate {
     /// OS keychain is unavailable — usually headless Linux without
     /// `gnome-keyring` / `KWallet` running.
     KeychainUnavailable(String),
+
+    // ─── Password vault (Phase B) ───────────────────────────────────────
+    /// An encrypted vault was found in the keychain; the GUI should
+    /// render the unlock screen and wait for a `SubmitPassword` command.
+    PasswordPromptRequired,
+    /// The last password attempt failed. Shown inline on the Unlock screen
+    /// or in the Settings modal.
+    PasswordError(String),
+    /// Password protection was enabled/disabled. The Settings toggle
+    /// should update to reflect the new state.
+    PasswordProtectionChanged(bool),
 }
 
 /// Convert a `GuiCommand` into a `DaemonRequest`.
@@ -403,7 +445,11 @@ fn command_to_request(cmd: &GuiCommand) -> Option<DaemonRequest> {
         // to the daemon as requests.
         GuiCommand::CompleteOnboarding { .. }
         | GuiCommand::RetryConnection
-        | GuiCommand::ResetIdentity => None,
+        | GuiCommand::ResetIdentity
+        | GuiCommand::SubmitPassword { .. }
+        | GuiCommand::EnablePasswordProtection { .. }
+        | GuiCommand::DisablePasswordProtection { .. }
+        | GuiCommand::ChangePassword { .. } => None,
     }
 }
 
@@ -561,9 +607,18 @@ impl Bridge {
     /// `false` if a fatal error was reported (keychain unavailable, daemon
     /// binary missing, user never completed onboarding, etc.).
     async fn bootstrap(&mut self, cmd_rx: &mut mpsc::Receiver<GuiCommand>) -> bool {
-        // Step 1: pull the seed phrase from the keychain, or wait for onboarding.
-        let seed = match crate::keychain::load_seed_phrase() {
-            Ok(Some(phrase)) => phrase,
+        use crate::keychain::StoredSeed;
+        // Step 1: pull the seed from the keychain.
+        let seed = match crate::keychain::load_seed() {
+            Ok(Some(StoredSeed::Plain(phrase))) => phrase,
+            Ok(Some(StoredSeed::Vault(blob))) => {
+                // Encrypted — ask the user for the password.
+                self.send(GuiUpdate::PasswordPromptRequired).await;
+                match self.wait_for_password(cmd_rx, &blob).await {
+                    Some(phrase) => phrase,
+                    None => return false,
+                }
+            }
             Ok(None) => {
                 // First run — wait for the user to complete onboarding.
                 self.send(GuiUpdate::OnboardingRequired).await;
@@ -674,6 +729,40 @@ impl Bridge {
         None
     }
 
+    /// Wait for `GuiCommand::SubmitPassword` and attempt to unlock the
+    /// vault. Loops on `PasswordError` until either unlock succeeds, the
+    /// user clicks Reset identity (→ `ResetIdentity` command), or the
+    /// command channel closes. Returns the unlocked phrase on success.
+    async fn wait_for_password(
+        &mut self,
+        cmd_rx: &mut mpsc::Receiver<GuiCommand>,
+        blob: &[u8],
+    ) -> Option<Zeroizing<String>> {
+        while let Some(cmd) = cmd_rx.recv().await {
+            match cmd {
+                GuiCommand::SubmitPassword { password } => {
+                    match crate::password_vault::unlock(blob, &password) {
+                        Ok(phrase) => return Some(phrase),
+                        Err(e) => {
+                            self.send(GuiUpdate::PasswordError(format!(
+                                "Unlock failed: {e}"
+                            )))
+                            .await;
+                        }
+                    }
+                }
+                GuiCommand::ResetIdentity => {
+                    let _ = crate::keychain::clear_all();
+                    self.send(GuiUpdate::OnboardingRequired).await;
+                    return self.wait_for_onboarding(cmd_rx).await;
+                }
+                GuiCommand::Shutdown => return None,
+                _ => {}
+            }
+        }
+        None
+    }
+
     /// Main loop: forward GUI commands as `DaemonRequest`s, relay
     /// `DaemonEvent`s back as `GuiUpdate`s, and transition to
     /// `reconnect_loop` on error.
@@ -715,8 +804,18 @@ impl Bridge {
                                 return;
                             }
                         }
-                        GuiCommand::CompleteOnboarding { .. } => {
-                            // Stale — onboarding is already done. Ignore.
+                        GuiCommand::CompleteOnboarding { .. }
+                        | GuiCommand::SubmitPassword { .. } => {
+                            // Stale — already past onboarding/unlock. Ignore.
+                        }
+                        GuiCommand::EnablePasswordProtection { password } => {
+                            self.handle_enable_password(&password).await;
+                        }
+                        GuiCommand::DisablePasswordProtection { password } => {
+                            self.handle_disable_password(&password).await;
+                        }
+                        GuiCommand::ChangePassword { old, new } => {
+                            self.handle_change_password(&old, &new).await;
                         }
                         other => {
                             if let Some(req) = command_to_request(&other) {
@@ -839,6 +938,107 @@ impl Bridge {
         })
         .await;
         false
+    }
+
+    /// Lock the current seed phrase with the user password and store it
+    /// as a vault in the keychain.
+    async fn handle_enable_password(&mut self, password: &Zeroizing<String>) {
+        let Some(seed) = self.seed.as_ref() else {
+            self.send(GuiUpdate::PasswordError("no identity loaded".into()))
+                .await;
+            return;
+        };
+        let blob = match crate::password_vault::lock(seed, password) {
+            Ok(b) => b,
+            Err(e) => {
+                self.send(GuiUpdate::PasswordError(format!("lock failed: {e}")))
+                    .await;
+                return;
+            }
+        };
+        if let Err(e) = crate::keychain::store_vault(&blob) {
+            self.send(GuiUpdate::PasswordError(format!("keychain: {e}")))
+                .await;
+            return;
+        }
+        self.send(GuiUpdate::PasswordProtectionChanged(true)).await;
+    }
+
+    /// Verify the user's password by decrypting the stored vault, then
+    /// re-store the phrase as plaintext (password protection off).
+    #[allow(clippy::single_match_else)]
+    async fn handle_disable_password(&mut self, password: &Zeroizing<String>) {
+        // Load the current vault from the keychain. The bridge's `seed`
+        // cache already holds the plaintext, but we still want to verify
+        // the password the user just typed.
+        use crate::keychain::StoredSeed;
+        let blob = match crate::keychain::load_seed() {
+            Ok(Some(StoredSeed::Vault(b))) => b,
+            Ok(Some(StoredSeed::Plain(_)) | None) => {
+                self.send(GuiUpdate::PasswordError(
+                    "no password to disable".into(),
+                ))
+                .await;
+                return;
+            }
+            Err(e) => {
+                self.send(GuiUpdate::PasswordError(format!("keychain: {e}")))
+                    .await;
+                return;
+            }
+        };
+        let phrase = match crate::password_vault::unlock(&blob, password) {
+            Ok(p) => p,
+            Err(e) => {
+                self.send(GuiUpdate::PasswordError(format!("unlock failed: {e}")))
+                    .await;
+                return;
+            }
+        };
+        if let Err(e) = crate::keychain::store_plain(&phrase) {
+            self.send(GuiUpdate::PasswordError(format!("keychain: {e}")))
+                .await;
+            return;
+        }
+        self.seed = Some(phrase);
+        self.send(GuiUpdate::PasswordProtectionChanged(false)).await;
+    }
+
+    /// Verify old password, re-lock with the new one.
+    async fn handle_change_password(
+        &mut self,
+        old: &Zeroizing<String>,
+        new: &Zeroizing<String>,
+    ) {
+        use crate::keychain::StoredSeed;
+        let Ok(Some(StoredSeed::Vault(blob))) = crate::keychain::load_seed() else {
+            self.send(GuiUpdate::PasswordError(
+                "no password vault to change".into(),
+            ))
+            .await;
+            return;
+        };
+        let Ok(phrase) = crate::password_vault::unlock(&blob, old) else {
+            self.send(GuiUpdate::PasswordError(
+                "current password is incorrect".into(),
+            ))
+            .await;
+            return;
+        };
+        let new_blob = match crate::password_vault::lock(&phrase, new) {
+            Ok(b) => b,
+            Err(e) => {
+                self.send(GuiUpdate::PasswordError(format!("lock failed: {e}")))
+                    .await;
+                return;
+            }
+        };
+        if let Err(e) = crate::keychain::store_vault(&new_blob) {
+            self.send(GuiUpdate::PasswordError(format!("keychain: {e}")))
+                .await;
+            return;
+        }
+        self.send(GuiUpdate::PasswordProtectionChanged(true)).await;
     }
 
     /// Graceful shutdown: send Shutdown to daemon, wait briefly, then drop

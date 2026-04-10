@@ -52,11 +52,6 @@ pub enum KeychainError {
 /// Representation of what we loaded from the keychain. Either a plaintext
 /// phrase (ready to use immediately) or a locked vault blob that needs
 /// to be decrypted with the user's password via `password_vault::unlock`.
-///
-/// `Vault` is currently unused at runtime — Chunks B3/B4 will wire it up
-/// in the Settings view and the Unlock screen. Marked `#[allow(dead_code)]`
-/// until then.
-#[allow(dead_code)]
 pub enum StoredSeed {
     Plain(Zeroizing<String>),
     Vault(Vec<u8>),
@@ -104,21 +99,6 @@ pub fn load_seed() -> Result<Option<StoredSeed>, KeychainError> {
     Ok(None)
 }
 
-/// Backwards-compatible helper used by the IPC bridge bootstrap path
-/// that currently only understands plaintext seeds. Returns `None` for
-/// vault-mode installations so the bridge can surface a
-/// "password required" update (chunk B4).
-///
-/// # Errors
-///
-/// Propagates `KeychainError` from [`load_seed`].
-pub fn load_seed_phrase() -> Result<Option<Zeroizing<String>>, KeychainError> {
-    match load_seed()? {
-        Some(StoredSeed::Plain(phrase)) => Ok(Some(phrase)),
-        Some(StoredSeed::Vault(_)) | None => Ok(None),
-    }
-}
-
 /// Store a plaintext seed phrase, overwriting any existing vault entry.
 ///
 /// # Errors
@@ -147,7 +127,6 @@ pub fn store_seed_phrase(phrase: &Zeroizing<String>) -> Result<(), KeychainError
 /// # Errors
 ///
 /// Returns `KeychainError` if the OS keychain is unavailable.
-#[allow(dead_code)]
 pub fn store_vault(blob: &[u8]) -> Result<(), KeychainError> {
     let encoded = base64::engine::general_purpose::STANDARD.encode(blob);
     let entry = keyring::Entry::new(SERVICE, ACCOUNT_VAULT)?;

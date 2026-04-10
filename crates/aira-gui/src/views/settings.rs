@@ -1,9 +1,10 @@
 //! Settings view — transport mode, TTL, device management, keychain.
 
 use egui::{RichText, ScrollArea, Ui};
+use zeroize::Zeroizing;
 
 use crate::ipc::GuiCommand;
-use crate::state::GuiState;
+use crate::state::{GuiState, SecurityModal};
 use crate::theme;
 
 /// Available transport modes for the combo box.
@@ -167,10 +168,16 @@ pub fn settings_view(ui: &mut Ui, state: &mut GuiState) -> Vec<GuiCommand> {
                     .strong(),
             );
             ui.label(
-                RichText::new("Passphrase is stored in OS keychain (Secret Service / Keychain / Credential Manager)")
+                RichText::new("Identity is stored in OS keychain (Secret Service / Keychain / Credential Manager)")
                     .size(theme::FONT_SMALL)
                     .color(theme::TEXT_SECONDARY),
             );
+
+            ui.add_space(theme::PANEL_PADDING);
+            ui.separator();
+
+            // ─── Security ───────────────────────────────────────────────
+            security_section(ui, state, &mut commands);
 
             ui.add_space(theme::PANEL_PADDING);
             ui.separator();
@@ -197,4 +204,261 @@ pub fn settings_view(ui: &mut Ui, state: &mut GuiState) -> Vec<GuiCommand> {
     });
 
     commands
+}
+
+/// Render the Security section (password protection toggle + modals).
+fn security_section(ui: &mut Ui, state: &mut GuiState, commands: &mut Vec<GuiCommand>) {
+    ui.add_space(theme::PANEL_PADDING);
+    ui.label(
+        RichText::new("Security")
+            .size(theme::FONT_BODY)
+            .color(theme::ACCENT)
+            .strong(),
+    );
+    ui.add_space(theme::ITEM_GAP);
+
+    let protected = state.identity_password_protected;
+    ui.label(
+        RichText::new(if protected {
+            "Identity is encrypted with a password. You will be asked to unlock on every launch."
+        } else {
+            "Identity is stored without a password. OS keychain ACLs protect it while you're logged in."
+        })
+        .size(theme::FONT_SMALL)
+        .color(theme::TEXT_SECONDARY),
+    );
+
+    ui.add_space(theme::ITEM_GAP * 2.0);
+
+    ui.horizontal(|ui| {
+        if protected {
+            if ui.button("Change password").clicked() {
+                state.settings_security.reset();
+                state.settings_security.modal = SecurityModal::ChangePassword;
+            }
+            if ui.button("Disable password protection").clicked() {
+                state.settings_security.reset();
+                state.settings_security.modal = SecurityModal::DisablePassword;
+            }
+        } else if ui.button("Protect identity with password").clicked() {
+            state.settings_security.reset();
+            state.settings_security.modal = SecurityModal::SetPassword;
+        }
+    });
+
+    // Open modal (rendered inline below the section — egui Windows
+    // don't nest well inside scrollable panels).
+    match state.settings_security.modal {
+        SecurityModal::None => {}
+        SecurityModal::SetPassword => {
+            render_set_password_modal(ui, state, commands);
+        }
+        SecurityModal::ChangePassword => {
+            render_change_password_modal(ui, state, commands);
+        }
+        SecurityModal::DisablePassword => {
+            render_disable_password_modal(ui, state, commands);
+        }
+    }
+}
+
+fn render_set_password_modal(ui: &mut Ui, state: &mut GuiState, commands: &mut Vec<GuiCommand>) {
+    ui.add_space(theme::PANEL_PADDING);
+    egui::Frame::none()
+        .fill(theme::BG_CARD)
+        .rounding(6.0)
+        .inner_margin(egui::Margin::same(theme::CARD_PADDING))
+        .show(ui, |ui| {
+            ui.label(
+                RichText::new("Set password")
+                    .size(theme::FONT_BODY)
+                    .color(theme::TEXT_PRIMARY)
+                    .strong(),
+            );
+            ui.add_space(theme::ITEM_GAP * 2.0);
+
+            ui.add(
+                egui::TextEdit::singleline(&mut state.settings_security.password_input)
+                    .password(true)
+                    .hint_text("New password")
+                    .desired_width(240.0),
+            );
+            ui.add_space(theme::ITEM_GAP);
+            ui.add(
+                egui::TextEdit::singleline(&mut state.settings_security.confirm_input)
+                    .password(true)
+                    .hint_text("Confirm password")
+                    .desired_width(240.0),
+            );
+
+            if let Some(err) = &state.settings_security.error {
+                ui.add_space(theme::ITEM_GAP);
+                ui.label(
+                    RichText::new(err)
+                        .size(theme::FONT_SMALL)
+                        .color(theme::DANGER),
+                );
+            }
+
+            ui.add_space(theme::ITEM_GAP * 2.0);
+            ui.horizontal(|ui| {
+                if ui.button("Cancel").clicked() {
+                    state.settings_security.reset();
+                }
+                let matches =
+                    state.settings_security.password_input == state.settings_security.confirm_input
+                        && !state.settings_security.password_input.is_empty();
+                if ui.add_enabled(matches, egui::Button::new("Enable")).clicked() {
+                    let password = Zeroizing::new(state.settings_security.password_input.clone());
+                    commands.push(GuiCommand::EnablePasswordProtection { password });
+                    // The bridge will emit PasswordProtectionChanged (→ reset).
+                    // Zero the local buffers immediately too.
+                    scrub(&mut state.settings_security.password_input);
+                    scrub(&mut state.settings_security.confirm_input);
+                } else if !matches && !state.settings_security.password_input.is_empty() {
+                    state.settings_security.error =
+                        Some("Passwords do not match".to_string());
+                }
+            });
+        });
+}
+
+fn render_change_password_modal(
+    ui: &mut Ui,
+    state: &mut GuiState,
+    commands: &mut Vec<GuiCommand>,
+) {
+    ui.add_space(theme::PANEL_PADDING);
+    egui::Frame::none()
+        .fill(theme::BG_CARD)
+        .rounding(6.0)
+        .inner_margin(egui::Margin::same(theme::CARD_PADDING))
+        .show(ui, |ui| {
+            ui.label(
+                RichText::new("Change password")
+                    .size(theme::FONT_BODY)
+                    .color(theme::TEXT_PRIMARY)
+                    .strong(),
+            );
+            ui.add_space(theme::ITEM_GAP * 2.0);
+
+            ui.add(
+                egui::TextEdit::singleline(&mut state.settings_security.old_password_input)
+                    .password(true)
+                    .hint_text("Current password")
+                    .desired_width(240.0),
+            );
+            ui.add_space(theme::ITEM_GAP);
+            ui.add(
+                egui::TextEdit::singleline(&mut state.settings_security.password_input)
+                    .password(true)
+                    .hint_text("New password")
+                    .desired_width(240.0),
+            );
+            ui.add_space(theme::ITEM_GAP);
+            ui.add(
+                egui::TextEdit::singleline(&mut state.settings_security.confirm_input)
+                    .password(true)
+                    .hint_text("Confirm new password")
+                    .desired_width(240.0),
+            );
+
+            if let Some(err) = &state.settings_security.error {
+                ui.add_space(theme::ITEM_GAP);
+                ui.label(
+                    RichText::new(err)
+                        .size(theme::FONT_SMALL)
+                        .color(theme::DANGER),
+                );
+            }
+
+            ui.add_space(theme::ITEM_GAP * 2.0);
+            ui.horizontal(|ui| {
+                if ui.button("Cancel").clicked() {
+                    state.settings_security.reset();
+                }
+                let matches = state.settings_security.password_input
+                    == state.settings_security.confirm_input
+                    && !state.settings_security.password_input.is_empty()
+                    && !state.settings_security.old_password_input.is_empty();
+                if ui.add_enabled(matches, egui::Button::new("Change")).clicked() {
+                    let old = Zeroizing::new(state.settings_security.old_password_input.clone());
+                    let new = Zeroizing::new(state.settings_security.password_input.clone());
+                    commands.push(GuiCommand::ChangePassword { old, new });
+                    scrub(&mut state.settings_security.old_password_input);
+                    scrub(&mut state.settings_security.password_input);
+                    scrub(&mut state.settings_security.confirm_input);
+                }
+            });
+        });
+}
+
+fn render_disable_password_modal(
+    ui: &mut Ui,
+    state: &mut GuiState,
+    commands: &mut Vec<GuiCommand>,
+) {
+    ui.add_space(theme::PANEL_PADDING);
+    egui::Frame::none()
+        .fill(theme::BG_CARD)
+        .rounding(6.0)
+        .inner_margin(egui::Margin::same(theme::CARD_PADDING))
+        .show(ui, |ui| {
+            ui.label(
+                RichText::new("Disable password protection")
+                    .size(theme::FONT_BODY)
+                    .color(theme::TEXT_PRIMARY)
+                    .strong(),
+            );
+            ui.add_space(theme::ITEM_GAP);
+            ui.label(
+                RichText::new(
+                    "Your identity will be stored without a password. Enter your current \
+                     password to confirm.",
+                )
+                .size(theme::FONT_SMALL)
+                .color(theme::TEXT_SECONDARY),
+            );
+            ui.add_space(theme::ITEM_GAP * 2.0);
+
+            ui.add(
+                egui::TextEdit::singleline(&mut state.settings_security.password_input)
+                    .password(true)
+                    .hint_text("Current password")
+                    .desired_width(240.0),
+            );
+
+            if let Some(err) = &state.settings_security.error {
+                ui.add_space(theme::ITEM_GAP);
+                ui.label(
+                    RichText::new(err)
+                        .size(theme::FONT_SMALL)
+                        .color(theme::DANGER),
+                );
+            }
+
+            ui.add_space(theme::ITEM_GAP * 2.0);
+            ui.horizontal(|ui| {
+                if ui.button("Cancel").clicked() {
+                    state.settings_security.reset();
+                }
+                let enabled = !state.settings_security.password_input.is_empty();
+                if ui.add_enabled(enabled, egui::Button::new("Disable")).clicked() {
+                    let password = Zeroizing::new(state.settings_security.password_input.clone());
+                    commands.push(GuiCommand::DisablePasswordProtection { password });
+                    scrub(&mut state.settings_security.password_input);
+                }
+            });
+        });
+}
+
+/// Overwrite a String with zero bytes and clear it. Best-effort memory
+/// hygiene for password buffers held inside `GuiState` — the
+/// allocation itself may still linger in the heap until reused.
+fn scrub(s: &mut String) {
+    // SAFETY: overwriting valid UTF-8 with 0x00 produces valid ASCII.
+    for b in unsafe { s.as_bytes_mut() } {
+        *b = 0;
+    }
+    s.clear();
 }

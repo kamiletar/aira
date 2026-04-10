@@ -117,13 +117,21 @@ impl eframe::App for AiraApp {
         }
         theme::apply_theme(ctx);
 
-        // 4.5. Onboarding early return — no top bar / nav tabs while the
-        // user hasn't completed the welcome flow.
+        // 4.5. Onboarding / Unlock early return — no top bar / nav tabs
+        // while we don't have an unlocked identity yet.
         if matches!(self.state.conn_status, ConnectionStatus::OnboardingRequired) {
             egui::CentralPanel::default().show(ctx, |ui| {
                 if let Some(cmd) =
                     crate::views::welcome::welcome_view(ui, &mut self.state.onboarding)
                 {
+                    self.send_command(cmd);
+                }
+            });
+            return;
+        }
+        if matches!(self.state.conn_status, ConnectionStatus::Locked { .. }) {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                if let Some(cmd) = crate::views::unlock::unlock_view(ui, &mut self.state) {
                     self.send_command(cmd);
                 }
             });
@@ -212,6 +220,10 @@ impl eframe::App for AiraApp {
                                 // Unreachable here (early return above),
                                 // but keep the match exhaustive.
                                 (theme::STATUS_OFFLINE, "Setup".to_string(), false)
+                            }
+                            ConnectionStatus::Locked { .. } => {
+                                // Unreachable here (early return above).
+                                (theme::STATUS_OFFLINE, "Locked".to_string(), false)
                             }
                             ConnectionStatus::SpawningDaemon => (
                                 theme::STATUS_OFFLINE,
