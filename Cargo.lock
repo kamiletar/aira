@@ -173,7 +173,7 @@ dependencies = [
 
 [[package]]
 name = "aira-bot"
-version = "0.3.3"
+version = "0.3.4"
 dependencies = [
  "aira-core",
  "aira-daemon",
@@ -187,7 +187,7 @@ dependencies = [
 
 [[package]]
 name = "aira-cli"
-version = "0.3.3"
+version = "0.3.4"
 dependencies = [
  "aira-core",
  "aira-daemon",
@@ -209,7 +209,7 @@ dependencies = [
 
 [[package]]
 name = "aira-core"
-version = "0.3.3"
+version = "0.3.4"
 dependencies = [
  "anyhow",
  "argon2",
@@ -237,7 +237,7 @@ dependencies = [
 
 [[package]]
 name = "aira-daemon"
-version = "0.3.3"
+version = "0.3.4"
 dependencies = [
  "aira-core",
  "aira-net",
@@ -259,7 +259,7 @@ dependencies = [
 
 [[package]]
 name = "aira-ffi"
-version = "0.3.3"
+version = "0.3.4"
 dependencies = [
  "aira-core",
  "aira-daemon",
@@ -277,7 +277,7 @@ dependencies = [
 
 [[package]]
 name = "aira-gui"
-version = "0.3.3"
+version = "0.3.4"
 dependencies = [
  "aira-core",
  "aira-daemon",
@@ -303,7 +303,7 @@ dependencies = [
 
 [[package]]
 name = "aira-net"
-version = "0.3.3"
+version = "0.3.4"
 dependencies = [
  "aira-core",
  "anyhow",
@@ -333,7 +333,7 @@ dependencies = [
 
 [[package]]
 name = "aira-storage"
-version = "0.3.3"
+version = "0.3.4"
 dependencies = [
  "aira-core",
  "anyhow",
