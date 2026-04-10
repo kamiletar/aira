@@ -20,18 +20,11 @@
 #![allow(clippy::unnecessary_wraps)]
 
 mod app;
-#[allow(dead_code)]
 mod daemon_manager;
 mod ipc;
-// Keychain and onboarding are wired up incrementally by chunk A5 (IPC
-// bridge bootstrap). Until then the public helpers are unused — silence
-// warnings rather than re-adding the stale `#[allow(dead_code)]` on the
-// whole modules.
-#[allow(dead_code)]
 mod keychain;
 #[allow(dead_code)]
 mod notifications;
-#[allow(dead_code)]
 mod onboarding;
 mod state;
 #[allow(dead_code)]

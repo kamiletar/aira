@@ -512,62 +512,360 @@ fn event_to_update(event: DaemonEvent) -> GuiUpdate {
     }
 }
 
+// ─── Bridge — connection supervisor ─────────────────────────────────────
+
+/// Backoff schedule (ms) for `Bridge::reconnect_loop`. Cap at 5 attempts,
+/// ~18.5 seconds total.
+const RECONNECT_BACKOFF_MS: &[u64] = &[500, 1000, 2000, 5000, 10_000];
+
+/// Interval between post-spawn `connect()` polls.
+const SPAWN_POLL_INTERVAL_MS: u64 = 200;
+
+/// Maximum number of post-spawn connect attempts (10 seconds total).
+const SPAWN_POLL_MAX_ATTEMPTS: u32 = 50;
+
+/// IPC bridge supervisor. Owns the (possibly spawned) daemon child and the
+/// current `DaemonClient` / event receiver; mediates between GUI commands
+/// and daemon requests while handling onboarding, spawning, and reconnect.
+struct Bridge {
+    ctx: egui::Context,
+    update_tx: mpsc::Sender<GuiUpdate>,
+    client: Option<DaemonClient>,
+    events: Option<mpsc::Receiver<DaemonEvent>>,
+    handle: crate::daemon_manager::DaemonHandle,
+    /// Seed phrase loaded from the keychain, kept so reconnect can re-spawn
+    /// the daemon if the owned child dies mid-session.
+    seed: Option<Zeroizing<String>>,
+}
+
+impl Bridge {
+    fn new(ctx: egui::Context, update_tx: mpsc::Sender<GuiUpdate>) -> Self {
+        Self {
+            ctx,
+            update_tx,
+            client: None,
+            events: None,
+            handle: crate::daemon_manager::DaemonHandle::external(),
+            seed: None,
+        }
+    }
+
+    async fn send(&self, update: GuiUpdate) {
+        let _ = self.update_tx.send(update).await;
+        self.ctx.request_repaint();
+    }
+
+    /// Bootstrap: keychain → onboarding (if empty) → connect (or spawn + connect).
+    ///
+    /// Returns `true` if the bridge is Connected and ready for the main loop,
+    /// `false` if a fatal error was reported (keychain unavailable, daemon
+    /// binary missing, user never completed onboarding, etc.).
+    async fn bootstrap(&mut self, cmd_rx: &mut mpsc::Receiver<GuiCommand>) -> bool {
+        // Step 1: pull the seed phrase from the keychain, or wait for onboarding.
+        let seed = match crate::keychain::load_seed_phrase() {
+            Ok(Some(phrase)) => phrase,
+            Ok(None) => {
+                // First run — wait for the user to complete onboarding.
+                self.send(GuiUpdate::OnboardingRequired).await;
+                match self.wait_for_onboarding(cmd_rx).await {
+                    Some(phrase) => phrase,
+                    None => return false, // user closed the window
+                }
+            }
+            Err(e) => {
+                self.send(GuiUpdate::KeychainUnavailable(e.to_string())).await;
+                return false;
+            }
+        };
+        self.seed = Some(seed);
+
+        // Step 2: try to adopt a pre-existing daemon first.
+        if let Ok(pair) = DaemonClient::connect().await {
+            self.client = Some(pair.0);
+            self.events = Some(pair.1);
+            self.handle = crate::daemon_manager::DaemonHandle::external();
+            self.send(GuiUpdate::Connected).await;
+            return true;
+        }
+
+        // Step 3: spawn our own daemon and poll until it answers.
+        self.send(GuiUpdate::SpawningDaemon).await;
+        let seed_ref = self.seed.as_ref().expect("seed set above");
+        match crate::daemon_manager::spawn(seed_ref) {
+            Ok(handle) => {
+                self.handle = handle;
+            }
+            Err(e) => {
+                // Distinguish "not found" from other spawn errors for a
+                // better dialog — daemon_manager puts the expected path in
+                // the reason string when the binary is missing.
+                if e.reason.contains("not found") {
+                    let expected = crate::daemon_manager::locate_daemon_binary()
+                        .err()
+                        .unwrap_or_default();
+                    self.send(GuiUpdate::DaemonNotFound {
+                        expected_path: expected,
+                    })
+                    .await;
+                } else {
+                    self.send(GuiUpdate::DaemonSpawnFailed {
+                        reason: e.reason,
+                        stderr: e.stderr,
+                    })
+                    .await;
+                }
+                return false;
+            }
+        }
+
+        // Step 4: poll connect() up to ~10s.
+        for _ in 0..SPAWN_POLL_MAX_ATTEMPTS {
+            if let Some(err) = crate::daemon_manager::check_early_exit(&mut self.handle) {
+                self.send(GuiUpdate::DaemonSpawnFailed {
+                    reason: err.reason,
+                    stderr: err.stderr,
+                })
+                .await;
+                return false;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(SPAWN_POLL_INTERVAL_MS))
+                .await;
+            if let Ok(pair) = DaemonClient::connect().await {
+                self.client = Some(pair.0);
+                self.events = Some(pair.1);
+                self.send(GuiUpdate::Connected).await;
+                return true;
+            }
+        }
+
+        self.send(GuiUpdate::DaemonSpawnFailed {
+            reason: "timed out waiting for daemon to open its IPC socket".into(),
+            stderr: None,
+        })
+        .await;
+        false
+    }
+
+    /// Wait for `GuiCommand::CompleteOnboarding`, persisting the phrase to
+    /// the keychain on receipt. Returns `None` if the command channel is
+    /// closed (i.e. the GUI is exiting).
+    async fn wait_for_onboarding(
+        &mut self,
+        cmd_rx: &mut mpsc::Receiver<GuiCommand>,
+    ) -> Option<Zeroizing<String>> {
+        while let Some(cmd) = cmd_rx.recv().await {
+            match cmd {
+                GuiCommand::CompleteOnboarding { phrase } => {
+                    if let Err(e) = crate::keychain::store_seed_phrase(&phrase) {
+                        self.send(GuiUpdate::KeychainUnavailable(e.to_string()))
+                            .await;
+                        // Don't return — let the user retry or close.
+                        continue;
+                    }
+                    return Some(phrase);
+                }
+                GuiCommand::Shutdown => return None,
+                _ => {
+                    // Ignore other commands during onboarding — nothing
+                    // meaningful can be forwarded to a non-existent daemon.
+                }
+            }
+        }
+        None
+    }
+
+    /// Main loop: forward GUI commands as `DaemonRequest`s, relay
+    /// `DaemonEvent`s back as `GuiUpdate`s, and transition to
+    /// `reconnect_loop` on error.
+    async fn main_loop(&mut self, cmd_rx: &mut mpsc::Receiver<GuiCommand>) {
+        loop {
+            let Some(client) = self.client.as_ref() else {
+                return;
+            };
+            let Some(events) = self.events.as_mut() else {
+                return;
+            };
+
+            tokio::select! {
+                maybe_cmd = cmd_rx.recv() => {
+                    let Some(cmd) = maybe_cmd else { return; };
+                    if matches!(cmd, GuiCommand::Shutdown) {
+                        if let Some(req) = command_to_request(&cmd) {
+                            let _ = client.request(&req).await;
+                        }
+                        return;
+                    }
+                    match cmd {
+                        GuiCommand::RetryConnection => {
+                            if self.reconnect_loop().await.is_err() {
+                                self.send(GuiUpdate::Disconnected(
+                                    "reconnect failed".into(),
+                                )).await;
+                            }
+                        }
+                        GuiCommand::ResetIdentity => {
+                            let _ = crate::keychain::delete_seed_phrase();
+                            self.seed = None;
+                            self.send(GuiUpdate::OnboardingRequired).await;
+                            let Some(phrase) = self.wait_for_onboarding(cmd_rx).await else {
+                                return;
+                            };
+                            self.seed = Some(phrase);
+                            if !self.respawn_after_reset().await {
+                                return;
+                            }
+                        }
+                        GuiCommand::CompleteOnboarding { .. } => {
+                            // Stale — onboarding is already done. Ignore.
+                        }
+                        other => {
+                            if let Some(req) = command_to_request(&other) {
+                                match client.request(&req).await {
+                                    Ok(resp) => {
+                                        let update = response_to_update(&other, resp);
+                                        self.send(update).await;
+                                    }
+                                    Err(e) => {
+                                        tracing::warn!(
+                                            "ipc: request failed, entering reconnect: {e}"
+                                        );
+                                        if self.reconnect_loop().await.is_err() {
+                                            self.send(GuiUpdate::Disconnected(
+                                                e.to_string(),
+                                            )).await;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                maybe_event = events.recv() => {
+                    if let Some(event) = maybe_event {
+                        let update = event_to_update(event);
+                        self.send(update).await;
+                    } else {
+                        tracing::warn!("ipc: event channel dropped, entering reconnect");
+                        if self.reconnect_loop().await.is_err() {
+                            self.send(GuiUpdate::Disconnected(
+                                "daemon event stream closed".into(),
+                            )).await;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Exponential-backoff reconnect schedule. Returns `Ok(())` on success
+    /// (self.client / self.events replaced), `Err(())` after exhausting all
+    /// attempts.
+    async fn reconnect_loop(&mut self) -> Result<(), ()> {
+        // Drop the dead client/events so we don't hold stale handles.
+        self.client = None;
+        self.events = None;
+
+        for (i, delay_ms) in RECONNECT_BACKOFF_MS.iter().enumerate() {
+            let attempt = (i + 1) as u32;
+            self.send(GuiUpdate::Reconnecting {
+                attempt,
+                next_in_ms: *delay_ms,
+            })
+            .await;
+            tokio::time::sleep(std::time::Duration::from_millis(*delay_ms)).await;
+
+            // If our owned child died, one-shot respawn before trying connect.
+            if self.handle.owned {
+                if let Some(err) = crate::daemon_manager::check_early_exit(&mut self.handle) {
+                    tracing::warn!("ipc: owned daemon died ({}), respawning", err.reason);
+                    if let Some(seed) = self.seed.as_ref() {
+                        match crate::daemon_manager::spawn(seed) {
+                            Ok(handle) => self.handle = handle,
+                            Err(e) => {
+                                tracing::error!("ipc: respawn failed: {}", e.reason);
+                                continue;
+                            }
+                        }
+                    }
+                }
+            }
+
+            match DaemonClient::connect().await {
+                Ok(pair) => {
+                    self.client = Some(pair.0);
+                    self.events = Some(pair.1);
+                    self.send(GuiUpdate::Connected).await;
+                    return Ok(());
+                }
+                Err(e) => {
+                    tracing::debug!("ipc: reconnect attempt {attempt} failed: {e}");
+                }
+            }
+        }
+        Err(())
+    }
+
+    /// Re-run the spawn + poll logic after a `ResetIdentity`. Keeps the
+    /// bridge alive so the user doesn't have to restart the GUI.
+    async fn respawn_after_reset(&mut self) -> bool {
+        let Some(seed_ref) = self.seed.as_ref() else {
+            return false;
+        };
+        self.send(GuiUpdate::SpawningDaemon).await;
+        match crate::daemon_manager::spawn(seed_ref) {
+            Ok(handle) => self.handle = handle,
+            Err(e) => {
+                self.send(GuiUpdate::DaemonSpawnFailed {
+                    reason: e.reason,
+                    stderr: e.stderr,
+                })
+                .await;
+                return false;
+            }
+        }
+        for _ in 0..SPAWN_POLL_MAX_ATTEMPTS {
+            tokio::time::sleep(std::time::Duration::from_millis(SPAWN_POLL_INTERVAL_MS))
+                .await;
+            if let Ok(pair) = DaemonClient::connect().await {
+                self.client = Some(pair.0);
+                self.events = Some(pair.1);
+                self.send(GuiUpdate::Connected).await;
+                return true;
+            }
+        }
+        self.send(GuiUpdate::DaemonSpawnFailed {
+            reason: "timed out after reset".into(),
+            stderr: None,
+        })
+        .await;
+        false
+    }
+
+    /// Graceful shutdown: send Shutdown to daemon, wait briefly, then drop
+    /// the handle (which kills any owned child as a fallback).
+    async fn shutdown(mut self) {
+        if let Some(client) = self.client.take() {
+            let _ = client.request(&DaemonRequest::Shutdown).await;
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        }
+        // `self.handle` drops here — Drop impl kills owned child if alive.
+    }
+}
+
 /// Run the IPC bridge on a tokio runtime (called from a spawned `std::thread`).
 ///
-/// Connects to the daemon, forwards commands from the UI as `DaemonRequest`s,
-/// and sends responses and events back as `GuiUpdate`s.
+/// Owns the daemon child process lifecycle (onboarding, spawning,
+/// reconnecting, graceful shutdown) via the `Bridge` supervisor.
 pub async fn run_ipc_bridge(
     ctx: egui::Context,
     mut cmd_rx: mpsc::Receiver<GuiCommand>,
     update_tx: mpsc::Sender<GuiUpdate>,
 ) {
-    // Connect to daemon
-    let (client, mut events) = match DaemonClient::connect().await {
-        Ok(pair) => {
-            let _ = update_tx.send(GuiUpdate::Connected).await;
-            ctx.request_repaint();
-            pair
-        }
-        Err(e) => {
-            let _ = update_tx.send(GuiUpdate::Disconnected(e.to_string())).await;
-            ctx.request_repaint();
-            return;
-        }
-    };
-
-    loop {
-        tokio::select! {
-            // Handle commands from the UI
-            Some(cmd) = cmd_rx.recv() => {
-                let is_shutdown = matches!(cmd, GuiCommand::Shutdown);
-                if let Some(req) = command_to_request(&cmd) {
-                    match client.request(&req).await {
-                        Ok(resp) => {
-                            let update = response_to_update(&cmd, resp);
-                            let _ = update_tx.send(update).await;
-                            ctx.request_repaint();
-                        }
-                        Err(e) => {
-                            let _ = update_tx.send(GuiUpdate::Disconnected(e.to_string())).await;
-                            ctx.request_repaint();
-                            break;
-                        }
-                    }
-                }
-                if is_shutdown {
-                    break;
-                }
-            }
-            // Handle async events from daemon
-            Some(event) = events.recv() => {
-                let update = event_to_update(event);
-                let _ = update_tx.send(update).await;
-                ctx.request_repaint();
-            }
-            // Both channels closed
-            else => break,
-        }
+    let mut bridge = Bridge::new(ctx, update_tx);
+    if bridge.bootstrap(&mut cmd_rx).await {
+        bridge.main_loop(&mut cmd_rx).await;
     }
+    bridge.shutdown().await;
 }
 
 #[cfg(test)]
