@@ -25,7 +25,7 @@
 | §6.4-6.6 | Версионирование, relay mailboxes, padding | [05-protocol-versioning.md](spec/05-protocol-versioning.md) |
 | §6.7-6.15 | Сообщения, реакции, receipts, typing | [06-protocol-messaging.md](spec/06-protocol-messaging.md) |
 | §6.16-6.18 | Расширяемость, профили, удаление аккаунта | [07-protocol-extensibility.md](spec/07-protocol-extensibility.md) |
-| §6.19-6.24 | Block, deniability, dedup, лимиты | [08-protocol-security.md](spec/08-protocol-security.md) |
+| §6.19-6.25 | Block, deniability, dedup, лимиты, разметка | [08-protocol-security.md](spec/08-protocol-security.md) |
 
 ### Инфраструктура
 
