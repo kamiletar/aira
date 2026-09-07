@@ -1,0 +1,299 @@
+{
+ "topic": "Браузерная версия Aira (Milestone 14, spec/17-cross-platform.md §15.5): iroh 1.x в wasm, хранилище redb/OPFS, getrandom, Argon2id в WASM, tokio/n0-future, CSP/COOP, Web Push, и что абстрагировать в aira-core/net/storage",
+ "summary": "Браузерная сборка технически возможна, но только как «relay-only демо» и только ПОСЛЕ M18 (iroh 1.1 + redb ≥3.1), M19 (демон в сети как переиспользуемая библиотека), M20 (свой iroh-relay с WebSocket/TLS/токеном) и M21 (mailbox — без него закрытая вкладка = потеря сообщений). Главные блокеры: (1) redb-opfs непригоден — GPL-3.0-only (Aira MIT/Apache-2.0), README «statement of intent», git-зависимость на неопубликованный redb, репозиторий мёртв с 2025-09-25, на crates.io нет; нужен свой OpfsBackend (~200-300 строк) поверх redb 4 `StorageBackend` в dedicated Worker, а redb 2.6.3 вообще не компилируется под wasm32 (починено в redb 3.1.0) и его формат v2 удалён в 3.0 — апгрейд redb 2→4 с `Database::upgrade()` надо делать в M18/M19 до появления пользователей; (2) iroh-blobs не поддерживает браузер (issue #90 открыт) — файлы в браузере исключаются; (3) Argon2id 256 МБ в WASM: параметры менять нельзя (иначе другая identity), память WASM не возвращается, iOS Safari OOM-риск → считать KDF в отдельном одноразовом Worker'е и терминировать его; (4) тройной getrandom (0.2/0.3/0.4 в Cargo.lock) — фичи `js`/`wasm_js` включать только в финальном крейте aira-wasm; (5) `tokio full` не собирается под wasm (только sync/macros/io-util/rt/time), нужны per-target features + n0-future; (6) SystemTime::now() в util.rs/storage паникует под wasm32 — заменить на web-time. Дешёвые предпосылки (web-time, per-target tokio, cfg-гейты blobs/relay-server/std::fs, `Storage::open_with_backend`, вынос IPC-типов демона в отдельный крейт, CI-guard `cargo check --target wasm32-unknown-unknown -p aira-core`) стоит сделать внутри M18/M19 (3-5 дней), сам M14 — 4-6 недель после M21, т.е. после релиза.",
+ "facts": [
+  {
+   "claim": "iroh в браузере: все соединения только через relay (UDP из песочницы нет, hole punching невозможен); нужен `iroh = { version = \"1\", default-features = false }` (снимает metrics); требуется wasm-bindgen; npm-пакета iroh нет — n0 рекомендует свой прикладной wrapper-крейт; прямые соединения в будущем возможны через WebTransport serverCertificateHashes/WebRTC; iroh-gossip поддерживает браузер с 0.33",
+   "source_url": "https://docs.iroh.computer/deployment/wasm-browser-support",
+   "confidence": "high",
+   "date": "2026-09-07"
+  },
+  {
+   "claim": "iroh 1.1.0 Cargo.toml: rust-version 1.91; default features = metrics, fast-apple-datapath, portmapper, tls-ring (при default-features=false TLS-бэкенд надо включать явно: tls-ring; aws-lc-rs под wasm не работает); на wasm-цели зависимости wasm-bindgen-futures 0.4, time 0.3 (wasm-bindgen), getrandom 0.4 (wasm_js), n0-future 0.3; вне wasm tokio с io-util/macros/sync/rt/net/fs/io-std; dev: wasm-bindgen-test 0.3.62, wasm-tracing 2.1",
+   "source_url": "https://raw.githubusercontent.com/n0-computer/iroh/v1.1.0/iroh/Cargo.toml",
+   "confidence": "high",
+   "date": "2026-08-25"
+  },
+  {
+   "claim": "iroh-relay 1.1.0: в браузере клиент через ws_stream_wasm 0.7.4 (default-features=false) + getrandom 0.4 wasm_js; фича server тянет tokio-websockets, tokio-rustls-acme, clap, dashmap; docs.rs датирует релиз 26 августа 2026",
+   "source_url": "https://raw.githubusercontent.com/n0-computer/iroh/v1.1.0/iroh-relay/Cargo.toml",
+   "confidence": "high",
+   "date": "2026-08-26"
+  },
+  {
+   "claim": "Транспорт до relay: обычное HTTPS-соединение с upgrade до WebSocket на пути /relay с субпротоколами iroh-relay-v2/v1, исходящий TCP 443; ACME/Let's Encrypt встроен в relay; для браузера используется challenge-response handshake (нет TLS keying-material exporter)",
+   "source_url": "https://docs.iroh.computer/about/faq",
+   "confidence": "medium",
+   "date": "2026-09-07"
+  },
+  {
+   "claim": "WebTransport в iroh — открытый issue #3750 (updated 2026-05-11): прямых соединений из браузера пока нет",
+   "source_url": "https://github.com/n0-computer/iroh/issues/3750",
+   "confidence": "high",
+   "date": "2026-05-11"
+  },
+  {
+   "claim": "iroh-blobs НЕ поддерживает браузер: tracking issue #90 «Browser / WebAssembly support» открыт, последнее обновление 2025-10-23, 1 комментарий — aira-net/src/blobs.rs (MemStore, tokio::fs:53,70) под wasm исключается",
+   "source_url": "https://github.com/n0-computer/iroh-blobs/issues/90",
+   "confidence": "high",
+   "date": "2025-10-23"
+  },
+  {
+   "claim": "n0 ведёт discussion #3200 «Common Wasm/browser Troubleshooting» — сборник типовых ошибок сборки iroh под wasm (getrandom, time, tokio)",
+   "source_url": "https://github.com/n0-computer/iroh/discussions/3200",
+   "confidence": "high",
+   "date": "2026-09-07"
+  },
+  {
+   "claim": "n0-future 0.3: замена tokio::{spawn,task,time} (spawn/JoinSet/sleep/timeout/interval), нативно на tokio, в браузере на wasm-bindgen-futures; «implementation detail of iroh», подключать самим при wasm-цели; в Cargo.lock уже есть n0-future 0.3.2",
+   "source_url": "https://docs.rs/n0-future/latest/n0_future/",
+   "confidence": "high",
+   "date": "2026-09-07"
+  },
+  {
+   "claim": "tokio под wasm32-unknown-unknown: compile_error!(\"Only features sync,macros,io-util,rt,time are supported on wasm.\") в tokio/src/lib.rs — workspace `tokio = { features = [\"full\"] }` (Cargo.toml:root) не соберётся",
+   "source_url": "https://github.com/tokio-rs/tokio/blob/master/tokio/src/lib.rs",
+   "confidence": "high",
+   "date": "2026-09-07"
+  },
+  {
+   "claim": "getrandom 0.3.4 (2025-10-14): при включённой фиче wasm_js бэкенд wasm_js используется по умолчанию, RUSTFLAGS `--cfg getrandom_backend=\"wasm_js\"` больше не нужен (но cfg переопределяет фичу); 0.4.0 (2026-02-02) — MSRV 1.85/edition 2024; 0.4.3 (2026-06-17) добавил wasm64. Рекомендация docs: включать wasm_js только в бинарных крейтах/тестах, не в библиотеках",
+   "source_url": "https://github.com/rust-random/getrandom/blob/master/CHANGELOG.md",
+   "confidence": "high",
+   "date": "2026-06-17"
+  },
+  {
+   "claim": "В Cargo.lock Aira три версии getrandom: 0.2.17 (:2851, нужна фича `js`), 0.3.4 (:2864, `wasm_js`), 0.4.2 (:2878, `wasm_js`) и rand 0.8.5 (:6287) + 0.9.2 (:6298); workspace `rand = \"0.8\"` → aira-core thread_rng идёт через getrandom 0.2",
+   "source_url": "C:\\web\\aira\\Cargo.lock",
+   "confidence": "high",
+   "date": "2026-09-07"
+  },
+  {
+   "claim": "redb-opfs (wireapp): version 0.1.0, license = \"GPL-3.0-only\", crate-type lib+cdylib, `redb = { git = \"https://github.com/cberner/redb\", branch = \"master\", version = \"3.0\" }` с комментарием «Temporary! Should be next released version containing PR #1084»; wasm-bindgen 0.2.101, web-sys FileSystemSyncAccessHandle/DedicatedWorkerGlobalScope",
+   "source_url": "https://raw.githubusercontent.com/wireapp/redb-opfs/main/Cargo.toml",
+   "confidence": "high",
+   "date": "2025-09-25"
+  },
+  {
+   "claim": "redb-opfs README: «The contents of this README are a statement of intent, not an accurate reflection of the current state»; OpfsBackend MUST run on a web worker (StorageBackend синхронный, OPFS асинхронный, block_on на main thread запрещён); два режима: Rust в воркере (`Builder::new().create_with_backend(OpfsBackend::new(\"my-db\")?)`) или WorkerHandle с main thread через worker-shim.js (с «unavoidable performance penalties»); единственный issue — «License» (2025-09-10); на crates.io отсутствует (HTTP 404)",
+   "source_url": "https://raw.githubusercontent.com/wireapp/redb-opfs/main/README.md",
+   "confidence": "high",
+   "date": "2025-09-25"
+  },
+  {
+   "claim": "Aira лицензирована MIT OR Apache-2.0 (Cargo.toml:18) — GPL-3.0-only redb-opfs нельзя линковать в npm-пакет aira-wasm без смены лицензии пакета",
+   "source_url": "C:\\web\\aira\\Cargo.toml",
+   "confidence": "high",
+   "date": "2026-09-07"
+  },
+  {
+   "claim": "redb 4.2 `StorageBackend: 'static + Debug + Send + Sync` — required: len(), read(offset, out: &mut [u8]), set_len(len) (новые байты нулями), sync_data(), write(offset, data); provided close() (вызывается ровно один раз при Drop/после WriteTransaction); реализации FileBackend и InMemoryBackend",
+   "source_url": "https://docs.rs/redb/latest/redb/trait.StorageBackend.html",
+   "confidence": "high",
+   "date": "2026-09-07"
+  },
+  {
+   "claim": "redb CHANGELOG: 1.4.0 — custom StorageBackend + Builder::create_with_backend; 2.6.0 (2025-05-22) — опциональный формат v3 + Database::upgrade(); 3.0.0 (2025-08-09) — формат v2 УДАЛЁН («Use Database::upgrade(), in redb 2.6, to migrate»), read() принимает &mut [u8], добавлен close(); 3.1.0 (2025-09-25) — «Fix compilation error on … wasm32-unknown»; 4.0.0 (2026-04-02); 4.2.0 (2026-08-17); 5.0 (не вышел) — no_std под experimental-api-5",
+   "source_url": "https://raw.githubusercontent.com/cberner/redb/master/CHANGELOG.md",
+   "confidence": "high",
+   "date": "2026-08-17"
+  },
+  {
+   "claim": "aira-storage: `Database::create(path)` (lib.rs:140), `Storage::open(path: &Path, key)` (lib.rs:139), `use std::path::Path` (lib.rs:31); redb::* используется в 10 файлах (lib.rs — 21 упоминание); backup.rs пишет/читает файлы напрямую (std::fs::write :114, std::fs::read :129, `export(..., path: &Path)` :49, `import(path: &Path, ...)` :128)",
+   "source_url": "C:\\web\\aira\\crates\\aira-storage\\src\\lib.rs",
+   "confidence": "high",
+   "date": "2026-09-07"
+  },
+  {
+   "claim": "OPFS createSyncAccessHandle доступен только в dedicated Worker (не main thread, не SharedWorker): Chrome 108+, Safari 16.4+, Firefox 111+; readwrite-unsafe режим — только Chrome 121+",
+   "source_url": "https://sqlite.org/forum/forumpost/449ae66eb1",
+   "confidence": "medium",
+   "date": "2026-05-01"
+  },
+  {
+   "claim": "Safari/WebKit: если у origin не было пользовательского взаимодействия 7 дней использования браузера, данные, созданные скриптом, удаляются; iOS Safari агрессивно вытесняет OPFS при нехватке места, если persist не выдан; защита — navigator.storage.persist()",
+   "source_url": "https://developer.mozilla.org/en-US/docs/Web/API/Storage_API/Storage_quotas_and_eviction_criteria",
+   "confidence": "high",
+   "date": "2026-09-07"
+  },
+  {
+   "claim": "seed.rs: Desktop m=262_144 KiB (256 МБ), t=3, p=4, соль b\"aira-master-v1-m256\" (:30-33); Mobile m=65_536, t=4, p=4, соль b\"aira-master-v1-m64\" (:36-39); enum Platform { Desktop, Mobile } (:43-49); from_phrase → Desktop (:89); Platform::Mobile используется только в тестах (identity.rs:114-118, handshake.rs:380). Разные соли/параметры → другая identity из той же фразы (spec/18-milestones.md:288-291)",
+   "source_url": "C:\\web\\aira\\crates\\aira-core\\src\\seed.rs",
+   "confidence": "high",
+   "date": "2026-09-07"
+  },
+  {
+   "claim": "argon2 0.5 в workspace (latest 0.6.0, 2026-08-27), фича parallel выключена, rayon в workspace нет → лейны считаются последовательно; SharedArrayBuffer/COOP-COEP не требуются (spec/17-cross-platform.md:148-149)",
+   "source_url": "C:\\web\\aira\\Cargo.toml",
+   "confidence": "high",
+   "date": "2026-09-07"
+  },
+  {
+   "claim": "argon2-browser (emscripten) бенчмарк на 1 MiB: Chrome WASM+SIMD 119 мс, Firefox WASM+SIMD 135 мс, Safari WASM (без SIMD) 174 мс — Safari ~1.5x медленнее из-за отсутствия SIMD-сборки",
+   "source_url": "https://github.com/antelle/argon2-browser",
+   "confidence": "high",
+   "date": "2026-09-07"
+  },
+  {
+   "claim": "Порядок времени argon2id при 256 MiB в WASM: ~372-389 мс на итерацию (openpgpjs argon2id / npm), т.е. при t=3 ожидаемо ≥1.2 с на десктопном Chrome, на мобильных заметно больше — требует собственного замера (spec/17 п.5 оценивает 3-9 с)",
+   "source_url": "https://www.npmjs.com/package/argon2id",
+   "confidence": "low",
+   "date": "2026-09-07"
+  },
+  {
+   "claim": "openpgpjs/argon2id: память Wasm очищается после вызова, но не освобождается («due to Wasm limitations») — рекомендуют перезагружать модуль, чтобы вернуть память; WebAssembly memory.grow только растёт, операции shrink нет",
+   "source_url": "https://raw.githubusercontent.com/openpgpjs/argon2id/main/README.md",
+   "confidence": "high",
+   "date": "2026-09-07"
+  },
+  {
+   "claim": "iOS Safari: WebAssembly.Memory с maximum 2048 МБ даёт OOM при инициализации, с 256 МБ — работает (godot #70621); при превышении бюджета iOS убивает вкладку без события ошибки; на iOS 16.4 `shared: true` память может не создаться",
+   "source_url": "https://github.com/godotengine/godot/issues/70621",
+   "confidence": "medium",
+   "date": "2026-09-07"
+  },
+  {
+   "claim": "Bitwarden: Argon2id с памятью >64 MiB даёт предупреждение при iOS autofill/Share sheet, и даже 64 MiB работает нестабильно на iOS; дефолт Bitwarden 32 MiB / 6 итераций / 4 потока",
+   "source_url": "https://bitwarden.com/help/kdf-algorithms/",
+   "confidence": "medium",
+   "date": "2026-09-07"
+  },
+  {
+   "claim": "WASM SIMD (simd128) поддерживается в Chrome 91+, Firefox 89+, Safari 16.4+; blake3 фича wasm32_simd даёт ~20% (по release notes) и до 6x на больших входах",
+   "source_url": "https://docs.rs/blake3",
+   "confidence": "medium",
+   "date": "2026-09-07"
+  },
+  {
+   "claim": "CSP: без 'wasm-unsafe-eval' в script-src WebAssembly.compile/instantiate блокируются; директива поддерживается Chrome 97+, Firefox 102+, Safari 16+ и не разрешает eval()/new Function()",
+   "source_url": "https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/Content-Security-Policy/script-src",
+   "confidence": "high",
+   "date": "2026-09-07"
+  },
+  {
+   "claim": "SharedArrayBuffer и WASM threads требуют cross-origin isolation: Cross-Origin-Opener-Policy: same-origin + Cross-Origin-Embedder-Policy: require-corp (обязательно в Chrome 92+, Firefox)",
+   "source_url": "https://web.dev/articles/coop-coep",
+   "confidence": "high",
+   "date": "2026-09-07"
+  },
+  {
+   "claim": "Web Push: PushSubscription.endpoint — capability-URL push-сервиса вендора браузера (Mozilla Autopush и т.п.), архитектура требует application server с VAPID и БД подписок + service worker; на iOS 16.4+ только для web-app, добавленного на Home Screen, requestPermission строго из click-handler, HTTPS обязателен",
+   "source_url": "https://developer.mozilla.org/en-US/docs/Web/API/Push_API",
+   "confidence": "high",
+   "date": "2026-09-07"
+  },
+  {
+   "claim": "wasm-bindgen latest 0.2.128 (2026-09-04); wasm-pack 0.15.0 (2026-05-14) добавил wasm64-unknown-unknown; wasm-bindgen-test запускается `wasm-pack test --headless --chrome|--firefox`, конфиг WebDriver через webdriver.json / WASM_BINDGEN_TEST_WEBDRIVER_JSON",
+   "source_url": "https://wasm-bindgen.github.io/wasm-bindgen/wasm-bindgen-test/browsers.html",
+   "confidence": "high",
+   "date": "2026-09-04"
+  },
+  {
+   "claim": "Rust изменил C ABI для wasm32-unknown-unknown (blog 2025-04-04): пользователи wasm-bindgen должны обновить wasm-bindgen и перегенерировать код — старые версии wasm-bindgen с новым rustc несовместимы",
+   "source_url": "https://blog.rust-lang.org/2025/04/04/c-abi-changes-for-wasm32-unknown-unknown/",
+   "confidence": "medium",
+   "date": "2025-04-04"
+  },
+  {
+   "claim": "governor 0.8.1 (ratelimit.rs:11-18, clock::DefaultClock) зависит от getrandom 0.3 wasm_js и web-time; quanta 0.12.6 имеет target-секцию wasm32-unknown-unknown (web-sys) — ratelimit.rs вероятно соберётся под wasm без правок (не проверено сборкой)",
+   "source_url": "C:\\Users\\Kami\\.cargo\\registry\\src\\index.crates.io-1949cf8c6b5b557f\\quanta-0.12.6\\Cargo.toml",
+   "confidence": "medium",
+   "date": "2026-09-07"
+  },
+  {
+   "claim": "rust-embed 8 (i18n.rs:19-20 `#[folder = \"locales/\"]`): без фичи debug-embed в debug-сборке файлы читаются с диска во время выполнения (rust-embed-impl lib.rs:46-51 `#[cfg(not(debug_assertions))]`) — под wasm debug-сборка ядра сломает i18n; нужна фича debug-embed для wasm-цели или только release",
+   "source_url": "C:\\Users\\Kami\\.cargo\\registry\\src\\index.crates.io-1949cf8c6b5b557f\\rust-embed-impl-8.11.0\\src\\lib.rs",
+   "confidence": "medium",
+   "date": "2026-09-07"
+  },
+  {
+   "claim": "aira-core: SystemTime::now() в util.rs:16-17 (now_micros) и :25-26 (now_secs) — на wasm32-unknown-unknown паникует; proto.rs:94 Duration — безопасно; std::env::var в i18n.rs:137,144 — возвращает Err, не паникует; std::thread только в тестах handshake.rs:369,401, identity.rs:125; thread_rng в group.rs:68, handshake.rs:84,232, kem.rs:51, padding.rs:48, ratchet.rs:213,425, seed.rs:265, sync.rs:145, util.rs:8, crypto/rustcrypto.rs:59",
+   "source_url": "C:\\web\\aira\\crates\\aira-core\\src\\util.rs",
+   "confidence": "high",
+   "date": "2026-09-07"
+  },
+  {
+   "claim": "aira-net: std::time::Instant в connection.rs:10,110,122,160 и relay.rs:12,125,134,142,185,255,258,292; tokio::spawn/select/time::sleep в relay.rs:179-185 (RelayServer — серверная часть); blobs.rs:9,52-70 std::path + tokio::fs + iroh_blobs MemStore; transport/{cdn,reality,tor,obfs,mimicry}.rs (tokio::net, SystemTime, tokio::spawn) — все за фичами cdn/reality/tor/obfs4/mimicry (transport/mod.rs:28-40), по умолчанию выключены; endpoint.rs:80 `Endpoint::builder(presets::N0)`; protocol.rs:15 tokio::sync::mpsc — под wasm работает; lib.rs:30-37 модули без cfg-гейтов",
+   "source_url": "C:\\web\\aira\\crates\\aira-net\\src\\lib.rs",
+   "confidence": "high",
+   "date": "2026-09-07"
+  },
+  {
+   "claim": "aira-storage: SystemTime::now() напрямую в contacts.rs:18-19, dedup.rs:19-20,55-56, messages.rs:114-115,147-148 (вместо aira_core::util::now_secs); thread_rng в encrypted.rs:33; std::env::temp_dir только в тестах",
+   "source_url": "C:\\web\\aira\\crates\\aira-storage\\src\\messages.rs",
+   "confidence": "high",
+   "date": "2026-09-07"
+  },
+  {
+   "claim": "IPC демона: DaemonRequest (types.rs:12), DaemonResponse (:176), ServerMessage (:290), DaemonEvent (:299) — только serde+postcard (types.rs без tokio), фрейминг 4-байтный LE length prefix + postcard (ipc.rs:3-4); но aira-daemon — bin-крейт с tokio full, handler.rs упоминает tokio 13 раз, aira-ffi/src/runtime.rs — 14; спека 14.1 п.2 и §15.5 требуют «воркер = демон» на том же протоколе",
+   "source_url": "C:\\web\\aira\\crates\\aira-daemon\\src\\types.rs",
+   "confidence": "high",
+   "date": "2026-09-07"
+  },
+  {
+   "claim": "discovery.rs — только invitation links `aira://add/<base64url(postcard(InvitationData))>` (:1-7), DHT нет; endpoint.rs:45 `bind(secret_key)` → presets::N0 — RelayMap/discovery n0, чей relay-сервис для 0.9x закрывается 30.09.2026",
+   "source_url": "C:\\web\\aira\\crates\\aira-net\\src\\discovery.rs",
+   "confidence": "high",
+   "date": "2026-09-07"
+  },
+  {
+   "claim": "Спека уже фиксирует: воркер = демон (postcard request/response + события через postMessage), getrandom только в aira-wasm, Argon2 параметры не менять, транспорты DPI и hole punching недоступны, веб = «демо» с дисклеймером (проблема доставки кода как у Signal), UI в отдельном репо letar/aira-try, CI-цель wasm32 в §15.7 (spec/18-milestones.md:267-322, spec/17-cross-platform.md:132-176)",
+   "source_url": "C:\\web\\aira\\spec\\18-milestones.md",
+   "confidence": "high",
+   "date": "2026-07-30"
+  },
+  {
+   "claim": "На машине нет установленного wasm32-unknown-unknown target (rustup target list --installed: только x86_64-pc-windows-msvc), rustc 1.94.1; workspace rust-version 1.82 (Cargo.toml:20) < 1.91 требуемых iroh 1.1; в CI (ci.yml/release.yml/android.yml) wasm-цели нет",
+   "source_url": "C:\\web\\aira\\.github\\workflows\\ci.yml",
+   "confidence": "high",
+   "date": "2026-09-07"
+  }
+ ],
+ "implications_for_aira": [
+  "M14 невозможен на текущем стеке: redb 2.6.3 не компилируется под wasm32 (починено в redb 3.1.0), iroh 0.97 теряет публичные relay 30.09.2026, ml-dsa заблокирован iroh-base 0.97 — значит M18 (iroh 1.1 + redb 4 + PQ-крейты) — жёсткая предпосылка.",
+  "Апгрейд redb 2→4 = смена формата файла (v2 удалён в 3.0): нужна одноразовая миграция `Database::upgrade()` через redb 2.6 (второй crate-alias `redb2`) или объявление несовместимости с БД 0.3.x. Делать это в M18/M19 вместе с `meta{schema_version}` (§4.1a аудита), пока нет пользователей с сетью.",
+  "redb-opfs (§14.4 спеки) выкинуть: GPL-3.0-only несовместим с MIT/Apache-2.0 npm-пакетом, README — «statement of intent», зависимость на git master redb, репо мёртв год. Писать свой `OpfsBackend` (redb 4 `StorageBackend`, 5 методов) в aira-wasm; трейт требует Send+Sync — web-sys типы !Send → обёртка `send_wrapper::SendWrapper` (уже в Cargo.lock 0.6.0, без unsafe). Спеку §15.5/§14.4 править.",
+  "Файловые переводы в браузере отпадают: iroh-blobs без wasm (issue #90) → `aira-net::blobs` под `#[cfg(not(target_family = \"wasm\"))]`; в IPC браузерного воркера SendFile → ошибка «not supported».",
+  "Серверные части aira-net (relay.rs RelayServer с tokio::spawn/sleep, transport/*) под wasm исключаются cfg/фичами; браузер — только клиент: endpoint + protocol + connection + discovery + ratelimit + (M21) mailbox-клиент.",
+  "Время: 4 места в core/storage вызывают SystemTime::now() напрямую и паникуют под wasm — единая точка `aira_core::util::{now_micros,now_secs}` на `web_time::SystemTime` (web-time 1.1.0 уже в lock), storage переводится на util; `Instant` в connection.rs → `web_time::Instant`.",
+  "Async: `tokio = full` в workspace → per-target зависимости в aira-net (`[target.'cfg(not(target_family=\"wasm\"))']` full; wasm: sync, macros, rt, time, io-util) + `n0-future` для spawn/sleep/timeout там, где сейчас tokio::spawn/tokio::time (cdn.rs можно не трогать — за фичей).",
+  "RNG: фичи getrandom (`js` для 0.2 через rand 0.8; `wasm_js` для 0.4 через iroh 1.1/rand 0.10) включать только в aira-wasm как target-specific deps; aira-core остаётся чистым. При M18-bump rand на 0.9/0.10 (ml-kem 0.3 = rand_core 0.10) остаётся один getrandom 0.4.",
+  "Argon2id: оставить только Desktop-параметры (удалить `Platform::Mobile` или спрятать под cfg(test), решение 6.5.4 п.5 аудита), никакого `Platform::Browser` — иначе учётка не переносится в нативный клиент. Память 256 МБ не возвращается → KDF выполнять в отдельном одноразовом Worker'е, результат (32-байтный seed) передавать в воркер-демон через postMessage и терминировать KDF-воркер; ловить RangeError/OOM и показывать «используйте нативный клиент» на iOS.",
+  "Без фоновой доставки и Web Push (нужен сервер вендора + VAPID application server, ломает метаданные) браузер получает сообщения только при открытой вкладке → M14 функционально зависит от M21 (mailbox retrieve при открытии) и M20 (свой relay с WebSocket).",
+  "Дублирование логики демона недопустимо: M19 должен родить платформо-независимую библиотеку (`aira-node`: SessionManager, handler, pending-дренаж) и отдельный крейт IPC-типов (`aira-ipc`, только serde/postcard), которые потом используют aira-daemon, aira-ffi/runtime.rs и aira-wasm. Иначе браузер = третья копия сетевого кода.",
+  "Требования к relay для браузера (M20): iroh-relay ≥1.0.2 (ставить 1.1.0), TLS на 443 с публично доверенным сертификатом (self-signed браузер не примет), WebSocket upgrade на /relay должен проходить прокси (Upgrade/Connection, проброс Sec-WebSocket-Protocol iroh-relay-v2, таймауты ≥1h), браузер всегда идёт challenge-fallback (+1 RTT) — вариант B с nginx-терминацией для него равноценен A; auth `shared_token` в браузере только `?token=` в URL WebSocket (попадает в access-логи прокси) → отдельный токен для web-клиентов, ротация, позже `access.http.url`; CORS для WebSocket не применяется, но любые HTTP-запросы из страницы к relay/dns (healthz, pkarr `/pkarr/<z32>` через fetch) требуют Access-Control-Allow-Origin.",
+  "Discovery в браузере: не зависеть от pkarr HTTP-lookup (CORS, лишний RTT) — класть relay_url + EndpointId в InvitationLink (discovery.rs) и в контакт-запись (`ContactInfo.endpoint_addr/relays`, уже запланировано в M19), dial по EndpointAddr с relay_url; `presets::N0` заменить на `AiraPreset` без DnsAddressLookup под wasm.",
+  "CSP страницы aira-try: `script-src 'self' 'wasm-unsafe-eval'; connect-src 'self' wss://relay.<domain> https://dns.<domain>; worker-src 'self'`; COOP/COEP не нужны, пока нет wasm-threads (не включать argon2 `parallel`/rayon — потребовало бы atomics + build-std nightly + cross-origin isolation).",
+  "Хранилище в браузере вытесняемо (Safari 7 дней без взаимодействия, iOS под давлением): при старте `navigator.storage.persist()`, UI-предупреждение, экспорт бэкапа как Blob (backup.rs разделить на `export_bytes/import_bytes` + тонкие fs-обёртки под cfg(not wasm)).",
+  "CI: с M18 добавить guard-job `rustup target add wasm32-unknown-unknown && cargo check -p aira-core --target wasm32-unknown-unknown` (без aira-net/storage до их подготовки), чтобы ядро не дрейфовало; wasm-pack build/test aira-wasm — в M14; rust-version → 1.91, wasm-bindgen 0.2.128 закрепить.",
+  "Спека устарела в §14.1 п.3 (getrandom 0.3 → 0.4 и 0.2/`js`), §14.3 п.5 («опционально» bump iroh → обязательно), §14.4 (redb-opfs → свой backend), §15.7 (wasm32 в CI — «после релиза»); habr_article.md:121 про mobile-Argon2 64MB."
+ ],
+ "recommended_design": "## Позиция\nБраузер = «демо/тонкий relay-only клиент» (spec §15.5 п.6) и НЕ входит в релизный путь. В релизном порядке (M18 → M19a → M19 → M20 → M21 → M22 → M23) M14 идёт ПОСЛЕ M21: без своего relay (M20) браузер не подключится вовсе, без mailbox (M21) он не получит ничего, что пришло при закрытой вкладке. Но «M14.0 — предпосылки в ядре» дёшевы (3-5 дней), не меняют поведение и должны быть сделаны внутри M18/M19, пока код и формат БД всё равно ломаются.\n\n## M14.0 — предпосылки в ядре (внутри M18/M19, до старта M14)\n1. **redb 2.6.3 → 4.2** (M18, вместе с bump iroh): redb <3.1 не компилируется под wasm32; формат v2 удалён в 3.0. Шаг миграции: `redb2 = { package = \"redb\", version = \"2.6\" }` только для одноразового `Database::upgrade()` при открытии старого файла (или объявить БД 0.3.x несовместимой — у 0.3.x нет сети, пользователей почти нет; решение владельца). Совместить с `meta{schema_version}` из плана M19. Сигнатуры: `StorageBackend::read(&self, off, out: &mut [u8])`.\n2. **`Storage::open_with_backend(backend: impl redb::StorageBackend, key)`** в aira-storage/src/lib.rs рядом с `open(path)` (:139-140): `Builder::new().create_with_backend(backend)`. `open(path)` остаётся тонкой обёрткой над `FileBackend`. backup.rs: выделить `export_bytes()/import_bytes()`, файловые `export/import` (:49,:114,:128-129) под `#[cfg(not(target_family = \"wasm\"))]`.\n3. **Время**: `aira-core/src/util.rs:16,25` → `web_time::SystemTime` (web-time = \"1\", re-export std вне wasm); storage contacts.rs:18, dedup.rs:19,55, messages.rs:114,147 → `aira_core::util::now_secs()`; aira-net connection.rs:10 → `web_time::Instant`.\n4. **Async в aira-net**: убрать `tokio.workspace` (full) из aira-net; `[target.'cfg(not(target_family = \"wasm\"))'.dependencies] tokio = { features = [\"full\"] }`, `[target.'cfg(target_family = \"wasm\")'.dependencies] tokio = { features = [\"sync\",\"macros\",\"rt\",\"time\",\"io-util\"] }` + `n0-future = \"0.3\"`; `tokio::spawn`/`tokio::time::sleep` в клиентских путях → `n0_future::task::spawn`/`n0_future::time::sleep`.\n5. **cfg-гейты в aira-net/src/lib.rs:30-37**: `blobs` и серверная половина `relay` (RelayServer, relay.rs:179-185) → `#[cfg(not(target_family = \"wasm\"))]`; transport/* уже за фичами — в wasm-сборке их не включать. `endpoint.rs:80 presets::N0` → `AiraPreset` (M20): `RelayMode::Custom(RelayMap)`, под wasm без `DnsAddressLookup`/pkarr-publisher.\n6. **iroh для wasm**: `iroh = { version = \"1.1\", default-features = false, features = [\"tls-ring\"] }` (проверить: docs говорят только про metrics, но tls-ring — default-фича, а QUIC-хендшейк через relay всё равно нужен; ring 0.17 под wasm32 собирается).\n7. **RNG**: aira-core/net/storage не трогать; фичи только в aira-wasm (см. ниже). При bump rand 0.8→0.10 в M18 (ml-kem 0.3) остаётся один getrandom 0.4.\n8. **seed.rs**: удалить `Platform::Mobile` (или `#[cfg(test)]`), `Platform` оставить с одним вариантом либо убрать enum; тесты перевести на `test_helpers` с уменьшенными параметрами под cfg(test). Никакого `Platform::Browser`. rust-embed: `features = [\"debug-embed\"]` для wasm-цели (или собирать wasm только в release). Тесты со `std::thread` (handshake.rs:369,401; identity.rs:125) → `#[cfg(not(target_arch = \"wasm32\"))]`.\n9. **Вынести IPC-типы**: `crates/aira-ipc` (types.rs:12-299 + фрейминг postcard из ipc.rs) без tokio; aira-daemon и aira-ffi зависят от него. В M19 сетевую логику (SessionManager, handler, pending-дренаж, presence) писать как библиотеку `aira-node` с абстракцией spawn/time (n0-future) — её же использует aira-wasm. Это ключевое требование к M19: не привязывать логику к `tokio::main`/std::fs.\n10. **CI guard**: job `cargo check -p aira-core --target wasm32-unknown-unknown` (с M18), позже `-p aira-net --no-default-features`, `-p aira-storage`. rust-version = \"1.91\".\n\n## M14 — сам милстоун (после M21, 4-6 недель)\n**14.1 `crates/aira-wasm`** (crate-type cdylib+rlib как aira-ffi): target-deps `getrandom = { version = \"0.4\", features = [\"wasm_js\"] }` (+ `getrandom@0.2 features=[\"js\"]`, пока жив rand 0.8), `wasm-bindgen 0.2.128`, `wasm-bindgen-futures`, `web-sys` (FileSystem*, DedicatedWorkerGlobalScope, StorageManager), `send_wrapper`, `n0-future`, `wasm-tracing`. Экспорт: `init(seed_bytes|phrase)`, `request(bytes) -> Promise<bytes>` (postcard `DaemonRequest/DaemonResponse` из aira-ipc), `on_event(callback)` (`ServerMessage/DaemonEvent`), `set_locale(navigator.language)`. Вся сборка живёт в dedicated Worker; main thread — только JS-прокси.\n**14.2 KDF-воркер**: отдельный маленький wasm-модуль/воркер `aira-kdf` (aira-core::seed только), запускается для derive, отдаёт 32-байтный seed transferable'ом, затем `worker.terminate()` — единственный способ вернуть 256 МБ. Прогресс-UI, таймаут, catch OOM → сообщение «используйте нативный клиент». Замерить Chrome/Firefox/Safari desktop и Android Chrome; iOS Safari — отдельный замер с ожиданием отказа.\n**14.3 Хранилище**: свой `OpfsBackend` (aira-wasm/src/opfs.rs, ~200-300 строк) поверх `FileSystemSyncAccessHandle`: len→getSize, read→read(buf, {at}), write→write(buf,{at}), set_len→truncate, sync_data→flush, close→close; `SendWrapper` для Send+Sync; открывать в Worker'е. Fallback/этап 0: `redb::backends::InMemoryBackend` + периодический encrypted snapshot в OPFS (async) — рабочее демо за день, потеря данных при краше приемлема для «демо». `navigator.storage.persist()` при старте + предупреждение в UI. Ключ хранилища — как в нативе (из seed), seed не хранить в OPFS в открытом виде (демо: держать в памяти воркера, повторный derive при перезапуске — или пароль-vault как в GUI).\n**14.4 Сеть**: `AiraEndpoint::bind` под wasm с `RelayMode::Custom` на свой relay (wss://relay.<domain>/relay, `RelayConfig::with_auth_token`), dial по EndpointAddr из InvitationLink/контакта (relay_url внутри), mailbox-клиент M21 (retrieve при старте вкладки + при событии). Файлы (SendFile) — `Unsupported`.\n**14.5 CI/публикация**: `wasm-pack build --target web --release` + `wasm-opt -Oz`, `wasm-pack test --headless --chrome --firefox`, замер размера .wasm (gz/brotli) как метрика, npm-пакет с версией workspace. Страница aira-try: CSP `script-src 'self' 'wasm-unsafe-eval'; connect-src 'self' wss://relay.<domain>; worker-src 'self'`, без COOP/COEP.\n\n## Требования к relay/aira-relay для браузера (закладывать в M20/M21)\n- iroh-relay 1.1.0, TLS 443 с публичным сертификатом; WebSocket `/relay` + субпротокол `iroh-relay-v2` проходят через nginx (вариант B из §3.3 аудита для браузера не хуже A: браузер всегда на challenge-fallback); `[limits.client.rx]` считать с учётом того, что 100 % байт браузерных клиентов идут через relay.\n- Auth: `shared_token` для web — отдельный от нативных клиентов, короткоживущий/ротируемый (утечка в логи прокси через `?token=`); в перспективе `access.http.url` → сервис Aira с PoW-гейтом (M22).\n- CORS: не нужен для WebSocket; нужен `Access-Control-Allow-Origin: https://try.<domain>` на iroh-dns-server `/pkarr/*` и `/healthz`, если страница их вызывает. Лучше в M14 обойтись без pkarr-lookup из браузера.\n- aira-relay (M21, ALPN `aira/2/relay`): протокол должен работать поверх relay-only QUIC-соединения (никаких допущений о прямом UDP), Register/Retrieve с квотами по EndpointId — браузерные клиенты создают identity легко, значит PoW/квоты на intro-mailbox обязательны до открытия веб-демо.\n\n## Что НЕ делать\nНе использовать redb-opfs (GPL, мёртв), не вводить `Platform::Browser`, не включать argon2 `parallel`/wasm-threads (COOP/COEP + nightly build-std), не делать Web Push, не тащить egui в браузер, не дублировать сетевой код демона в aira-wasm.",
+ "risks": [
+  "Порядок зависимостей: M14 упирается в M18+M19+M20+M21 (≈8-10 недель релизной работы); любые попытки начать браузер раньше дадут третью копию сетевого кода и не подключатся ни к чему после 30.09.2026.",
+  "redb 2→4: удалённый формат v2 — если не сделать миграцию через redb 2.6 `Database::upgrade()`, БД пользователей 0.3.x перестанут открываться; миграция должна быть протестирована на реальном файле v0.3.5.",
+  "Свой OpfsBackend — код с редкими краевыми случаями (частичные записи, set_len с зануляемым хвостом, close ровно один раз, QuotaExceeded, потеря sync access handle при второй вкладке — OPFS даёт эксклюзивную блокировку на файл: вторая вкладка с тем же origin не откроет БД, нужен lock/BroadcastChannel «уже открыто»).",
+  "Argon2id 256 МБ в WASM: реальные времена не измерены (оценка 1.2-9 с), iOS Safari может убить вкладку молча; Safari без SIMD-ускорения; без отдельного KDF-воркера 256 МБ остаются занятыми до закрытия вкладки.",
+  "`iroh default-features = false` снимает tls-ring — при неправильном наборе фич сборка упадёт на отсутствии crypto provider у rustls/noq; нужна проверка `cargo check --target wasm32-unknown-unknown` до планирования.",
+  "Токен relay в URL WebSocket (`?token=`) утекает в логи прокси/CDN и в DevTools — общий shared_token нативных клиентов будет скомпрометирован первым же веб-демо.",
+  "Вытеснение хранилища Safari (7 дней без взаимодействия) и отсутствие persist на iOS → потеря ratchet-состояния = невозможность расшифровать последующие сообщения (не только история). Для ratchet это критичнее, чем «потеря кэша».",
+  "Отсутствие фоновой доставки: без mailbox (M21) браузерный клиент физически не получает ничего вне открытой вкладки; при ratchet со строгой последовательностью пропуски приведут к рассинхронизации сессий.",
+  "Доставка кода через веб (spec §15.5 п.6): подмена JS/WASM сервером = полный компромисс; нужен дисклеймер, SRI/подписанные релизы npm, отдельный домен try.<domain>.",
+  "Три версии getrandom и две rand в Cargo.lock: пропущенная фича `js` для getrandom 0.2 даёт compile_error только на wasm-цели — ловится лишь CI-guard'ом.",
+  "rust-embed в debug-сборке читает `locales/` с диска — wasm-dev сборка без `debug-embed` молча теряет переводы.",
+  "Бандл: размер iroh+rustls+ring+ml-dsa+ml-kem+redb в .wasm не измерен; если >5-8 МБ gz — время первой загрузки на мобильных сделает «демо» бесполезным; нужен ранний замер (wasm-opt -Oz, opt-level = \"z\", lto, panic = \"abort\" в профиле wasm).",
+  "Лицензии: GPL-3.0 redb-opfs; при vendoring/форке npm-пакет aira-wasm стал бы GPL — конфликт с MIT/Apache-2.0 и с публикацией в letar."
+ ],
+ "open_questions": [
+  "Собирается ли `iroh 1.1 (default-features=false, tls-ring)` + `iroh-relay` клиент под wasm32-unknown-unknown с текущим rustc 1.94 и какой размер .wasm (gz/brotli) у минимального endpoint? — первый замер M14.0, определяет реалистичность всего милстоуна.",
+  "Решение владельца: миграция БД 0.3.x через redb 2.6 `upgrade()` или объявить 0.4 несовместимой с локальными БД 0.3.x?",
+  "Решение владельца: удалить `Platform::Mobile` (seed.rs:36-49) целиком и переписать тесты на cfg(test)-параметры? (аудит 6.5.4 п.5)",
+  "Реальное время derive (m=256 МБ, t=3, p=4 последовательно) в WASM на Chrome/Firefox/Safari desktop, Android Chrome, iOS Safari — и доля OOM на iOS. Если iOS не тянет — веб-демо объявляется «desktop-only»?",
+  "Нужен ли pkarr-lookup из браузера (CORS на iroh-dns-server, `PkarrResolver` через fetch) или в M14 достаточно relay_url внутри InvitationLink/контакта? Проверить, что iroh в wasm умеет DNS/pkarr вообще (docs: discovery-local-network и pkarr-dht несовместимы; HTTPS-pkarr — не подтверждено).",
+  "Как передавать seed в воркер-демон и хранить между сессиями браузера: повторный derive при каждом открытии (3-9 с) vs зашифрованный паролем vault в OPFS (как password vault GUI M9.5)?",
+  "Поведение при двух вкладках одного origin: OPFS sync access handle эксклюзивен — блокировать вторую вкладку через Web Locks API или проксировать через SharedWorker (у которого нет createSyncAccessHandle)?",
+  "Отдельный `shared_token` для web-клиентов и его ротация — или сразу `access.http.url` с PoW-гейтом (M22) до открытия веб-демо?",
+  "Куда положить `aira-ipc`/`aira-node` (выделение из aira-daemon) — в M19 сразу или как рефакторинг после релиза? Без этого aira-wasm дублирует handler.rs.",
+  "Стоит ли фиксировать в спеке, что веб-клиент = только desktop-браузеры (Chrome/Firefox/Safari 16.4+) и Android Chrome, а iOS Safari — «не поддерживается» (память, вытеснение, нет Home-Screen persist без установки)?"
+ ]
+}

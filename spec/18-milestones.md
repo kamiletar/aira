@@ -767,10 +767,45 @@ Zero после возобновления calls), reproducible builds (`trim-pa
 - **M16 (разметка)** — дёшево и безопасно, первым после беты. **M15 (голосовые)** — после M16.
 - **M17 (Tauri)** — после того, как сетевой слой стабилен в демоне; иначе перенос UI поверх
   неработающей доставки удваивает миграционный долг.
-- **M14 (браузер)** — последним: зависит от relay-only режима (M20) и протокола relay v2 (M21);
-  `redb-opfs` отсутствует на crates.io (GitHub wireapp/redb-opfs, 2025-09-25) — нужно решение по
-  хранилищу; `getrandom` 0.4 (не 0.3, §14.1 п.3) с `--cfg getrandom_backend="wasm_js"`; п.14.3.5
-  «опционально iroh 1.0» устарел — iroh 1.1 обязателен (M18). Детали — после результата
-  исследования wasm (аудит §6).
+- **M14 (браузер)** — последним, после M21 (4–6 недель): без своего relay (M20) браузер не
+  подключится, без mailbox (M21) не получит ничего при закрытой вкладке. Исследование — аудит §6.
+  Правки к тексту M14 выше:
+  - §14.4: **`redb-opfs` не использовать** — `GPL-3.0-only` (Aira MIT/Apache-2.0), README
+    «statement of intent», git-зависимость на master redb, репозиторий мёртв с 2025-09-25, на
+    crates.io нет. Вместо него свой `OpfsBackend` (~200–300 строк) поверх redb 4
+    `StorageBackend` в dedicated Worker (`send_wrapper` для Send+Sync); этап 0 —
+    `InMemoryBackend` + периодический зашифрованный снапшот в OPFS. `navigator.storage.persist()`
+    обязателен (Safari вытесняет данные через 7 дней без взаимодействия; потеря ratchet-состояния
+    = невозможность расшифровать дальнейшие сообщения).
+  - §14.1 п.3: `getrandom` **0.4** (iroh 1.1) и 0.2 (`js`, пока жив rand 0.8) — фичи только в
+    `aira-wasm` как target-specific deps; с 0.3.4 `--cfg getrandom_backend` не нужен.
+  - §14.2 п.3: `Platform::Mobile` удалить (M19), `Platform::Browser` не вводить; Argon2id 256 МБ
+    считать в отдельном одноразовом KDF-воркере и терминировать его (WASM-память не
+    возвращается); iOS Safari может убить вкладку молча — веб-клиент, вероятно, «desktop + Android
+    Chrome», iOS не поддерживается (решение владельца).
+  - §14.3: п.5 «опционально iroh 1.0» → iroh 1.1 обязателен (M18); `iroh = { version = "1",
+    default-features = false, features = ["tls-ring"] }` (aws-lc-rs/PQ-TLS под wasm недоступен);
+    `tokio` только sync/macros/rt/time/io-util + `n0-future`; **iroh-blobs не поддерживает
+    браузер** (issue #90) — файлы в браузере исключены, `SendFile` → `Unsupported`; discovery —
+    relay_url + EndpointId внутри InvitationLink/контакта, без pkarr-lookup из браузера.
+  - Новый **§14.0 — предпосылки в ядре (внутри M18/M19, 3–5 дней):** redb 2.6 → 4.2 (redb < 3.1
+    не компилируется под wasm32; формат v2 удалён в 3.0 → миграция через `redb2 = { package =
+    "redb", version = "2.6" }` + `Database::upgrade()` либо объявить БД 0.3.x несовместимой —
+    решение владельца) и `Storage::open_with_backend`; `backup.rs` → `export_bytes/import_bytes`;
+    единая точка времени `aira_core::util::{now_micros, now_secs}` на `web-time` (сейчас
+    `SystemTime::now()` в util.rs:16,25, contacts.rs:18, dedup.rs:19,55, messages.rs:114,147
+    паникует под wasm; `Instant` в connection.rs/relay.rs); tokio per-target в aira-net; cfg-гейты
+    на `blobs` и `RelayServer`; крейт `aira-ipc` (types.rs + фрейминг, без tokio) и библиотека
+    `aira-node` (SessionManager, handler, pending-дренаж) — их же используют aira-daemon, aira-ffi
+    и aira-wasm; `rust-embed` `debug-embed` для wasm; CI guard `cargo check -p aira-core --target
+    wasm32-unknown-unknown`.
+  - §14.5: `wasm-pack build --target web --release` + `wasm-opt -Oz`, `wasm-pack test --headless
+    --chrome --firefox`; **размер .wasm (gz/brotli) — первый замер**, при > 5–8 МБ демо на мобильных
+    бесполезно. CSP `script-src 'self' 'wasm-unsafe-eval'; connect-src 'self'
+    wss://relay.<domain>; worker-src 'self'`; COOP/COEP не нужны. Web Push не делать.
+  - Требования к relay (M20/M21): TLS 443 с публичным сертификатом, WebSocket `/relay` через
+    nginx (браузер всегда на challenge-fallback), **отдельный ротируемый `shared_token` для web**
+    (уходит в `?token=` URL → логи прокси), CORS на `/pkarr/*` и `/healthz` при необходимости;
+    aira-relay без допущений о прямом UDP, PoW/квоты на intro-mailbox до открытия веб-демо.
 
 ---
