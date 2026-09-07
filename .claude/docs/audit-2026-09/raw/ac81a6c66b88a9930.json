@@ -1,0 +1,281 @@
+{
+ "scope": "Аудит spec/*.md, SPEC.md, docs/INSTALL.md, habr_article.md, CLAUDE.md против кода на HEAD 971e038 (2026-07-30, workspace 0.3.5). Только Read/Grep/Glob/git log; cargo не запускался. Данные предыдущих агентов (демон без сети, relay не подключён, pending::dequeue не вызывается, факты crates.io в .claude/docs/audit-2026-09/facts-crates.md) приняты как данность. Покрыто: статус M1–M17, противоречия relay/offline/PoW, защита от массовой генерации identity, устаревшие версии/даты, «обещано, но нет в коде», оценка M14–M17 относительно релиза, места спеки для правки под M18–M23.",
+ "summary": "Спека описывает мессенджер с рабочим store-and-forward relay, PoW на Contact Request, adaptive puzzles и DHT — в коде из этого есть только in-memory RelayServer без auth/квот отправителя (crates/aira-net/src/relay.rs), который никем не используется в production, и модуль spam.rs, который никем не вызывается (grep `spam::` вне aira-core → 0 совпадений; `ContactRequest` отсутствует в proto.rs). Milestones 1–10, 12, 13 закоммичены как «implement», но M2 (relay/DHT/bootstrap), M7 (obfs без ptrs, cdn симулирован), M12 (tor = SOCKS без arti) и M10 (APK не подписан, FFI не использует Platform::Mobile) — partial; M9.6 и M14–M17 — not started. По relay/offline спека внутренне противоречива минимум в 9 точках (§5.1 vs §6.3 vs §6.5 vs §11B.5 vs §11B.5.1 vs habr), а версии зависимостей (iroh 0.97, ml-dsa 0.0/0.1, redb 2, «iroh ~1.0 вышел из RC 0.97+», «Spec v0.4» vs «Версия 0.2») устарели. habr_article.md заявляет M2 «Done» с relay mailboxes и mobile-Argon2 — оба утверждения не соответствуют коду. Для релиза M14–M17 нужно отложить; в спеку надо добавить M18–M23 и переписать §5.1/§5.3/§6.3/§6.5/§11B.5/§11B.5.1/§13.2/§10/§15.7.",
+ "implemented": [
+  {
+   "feature": "M1 Core crypto",
+   "evidence": "crates/aira-core/src/{crypto/mod.rs,crypto/rustcrypto.rs,seed.rs,identity.rs,kem.rs,handshake.rs,ratchet.rs,padding.rs,safety.rs}; commit c277849; handshake.rs:25 PROTOCOL_VERSION=1",
+   "quality": "works-but-rough",
+   "note": "Модули есть, но по release-audit §2.5 C1–C7: wire не несёт ratchet-header, AEAD без AAD, PQ-шаг ratchet не стартует, handshake не PQXDH. proptest объявлен, `proptest!` не используется (C11). Требует M19a «протокол v2»."
+  },
+  {
+   "feature": "M2 Networking + Relay",
+   "evidence": "crates/aira-net/src/{endpoint.rs,connection.rs,discovery.rs,relay.rs}; endpoint.rs:80 `Endpoint::builder(presets::N0)`; discovery.rs:6 «DHT discovery is optional in v0.1 and will be implemented in a later milestone»; relay.rs:149-160 `RelayServer { mailboxes: Arc<RwLock<HashMap>> }`; tests relay_offline.rs:18,91,105, two_node_chat.rs:16,93",
+   "quality": "works-but-rough",
+   "note": "п.3 DHT — нет (только InvitationLink); п.5 bootstrap/relay-нода — нет (grep bootstrap: только aira-gui Bridge); relay in-memory, используется только тестами; в daemon RelayClient/RelayServer не вызываются (данность). Зависит от публичных relay n0, отключаемых 30.09.2026."
+  },
+  {
+   "feature": "M3 Storage + Daemon",
+   "evidence": "crates/aira-storage/src/{lib.rs,messages.rs,pending.rs,encrypted.rs,backup.rs,settings.rs}; crates/aira-daemon/src/{main.rs,ipc.rs,handler.rs}; main.rs:164-171 TTL-таск delete_expired; types.rs DaemonRequest SetTtl/ExportBackup/ImportBackup",
+   "quality": "works-but-rough",
+   "note": "Схема, шифрование, IPC, TTL, backup — есть. Но демон не поднимает Endpoint, SendMessage пишет только в redb (handler.rs:64-75), pending::dequeue не вызывается (данность) → «daemon автоматически доставляет очередь» (§6.3a) не реализовано."
+  },
+  {
+   "feature": "M4 File transfer",
+   "evidence": "crates/aira-net/src/blobs.rs; crates/aira-daemon/src/transfers.rs; main.rs:123 BlobStore::new(); types.rs SendFile/FileProgress/FileComplete/FileError; commit 14c994f",
+   "quality": "works-but-rough",
+   "note": "BlobStore и IPC-события есть; без сетевого слоя в демоне реальная передача между узлами недоступна."
+  },
+  {
+   "feature": "M5 CLI",
+   "evidence": "crates/aira-cli/src/{app.rs,commands.rs,ui.rs,ipc.rs}; commands.rs: Add/Block/DeleteAccount/Devices/Disappear/Export/File/Group*/Import/Info/Lang/Link/Me/Message/Mute/MyKey/Profile/Search/Transport/Unblock/Unlink/Verify; commit 2eb76c4",
+   "quality": "production",
+   "note": "Команды спеки §16 M5 реализованы; e2e через сеть невозможен по причине M3."
+  },
+  {
+   "feature": "M6 Групповые чаты",
+   "evidence": "crates/aira-core/src/{group.rs,group_proto.rs}; crates/aira-storage/src/{groups.rs,pseudonyms.rs}; handler.rs:354-680 handle_create_group..handle_incoming_group_control; тесты handler.rs:1021-1426; commits 713a43e, 12ef481, c37c4e3",
+   "quality": "works-but-rough",
+   "note": "Sender Keys, control, pseudonyms §12.6 — есть. Интеграционный тест «3 ноды в группе» (п.6) отсутствует — только unit в handler.rs; доставка group control по сети не подключена."
+  },
+  {
+   "feature": "M6A Bot SDK",
+   "evidence": "crates/aira-bot/src/{lib.rs,context.rs,runner.rs}, examples/echo.rs; docs/BOT_SDK.md; commit c990d0c",
+   "quality": "production",
+   "note": "п.5 WASM sandbox (wasmtime) — нет (grep wasmtime в Cargo.toml → 0), но в спеке помечен как v0.3."
+  },
+  {
+   "feature": "M7 DPI resistance",
+   "evidence": "crates/aira-net/src/transport/{mod.rs,direct.rs,obfs.rs,mimicry.rs,cdn.rs}; obfs.rs:1-12 «Simplified obfs4-like scheme… When the ptrs crate becomes available»; Cargo.toml:75 `# ptrs = \"0.8\" # TODO(M7)`; cdn.rs:257 «Simulate incoming data from the CDN»; tests/dpi_simulator.rs:81-196; CLI /transport",
+   "quality": "works-but-rough",
+   "note": "obfs — собственный XOR-keystream, не obfs4/ptrs; CDN transport с симуляцией в тесте; DPI-тест — собственный классификатор, не nDPI/Wireshark. Транспорты не задействованы в демоне (только SetTransportMode хранится)."
+  },
+  {
+   "feature": "M8 Мультидевайс",
+   "evidence": "crates/aira-core/src/{device.rs,sync.rs}; tests/multidevice.rs:21-191 (6 тестов); discovery.rs:64-144 DeviceRecord; crates/aira-storage/src/devices.rs; CLI Link/Devices/Unlink; commit 4b2ff14",
+   "quality": "works-but-rough",
+   "note": "п.3 «DHT мультидевайс записи» — есть только структура DeviceRecord, публикации в DHT нет (DHT не реализован). п.6 интеграционный тест 2 устройств — только in-process без сети."
+  },
+  {
+   "feature": "M9 Desktop GUI",
+   "evidence": "crates/aira-gui/src/{app.rs,tray.rs,keychain.rs,notifications.rs,daemon_manager.rs}; Cargo.toml:92-93,120 tray-icon/keyring/notify-rust; release.yml:95-152 MSI/DMG/AppImage; commit 9440098",
+   "quality": "works-but-rough",
+   "note": "keyring без platform-features → mock store (данность); code signing нет (INSTALL.md:30)."
+  },
+  {
+   "feature": "M9.5 GUI UX: auto-spawn, onboarding, password vault, инсталляторы",
+   "evidence": "commits a40d889, bf4b498, 3820449, 36d10cf, 1b133db, d26fb98, e3388fd, aebdfc2, 851ec91; файлы daemon_manager.rs, onboarding.rs, views/welcome.rs, views/unlock.rs, password_vault.rs, wix/main.wxs, scripts/bundle-*.sh, docs/INSTALL.md",
+   "quality": "works-but-rough",
+   "note": "Все три фазы закоммичены; ограничение — keychain без реального бэкенда (см. release-audit §5.5.1)."
+  },
+  {
+   "feature": "M9.6 Security, Android signing, i18n, темы, UX polish",
+   "evidence": "Cargo.toml (unstaged) ml-dsa rc.4 не собирается; deny.toml:45 и .cargo/audit.toml:12 всё ещё ignore RUSTSEC-2025-0144; mobile/android/app/build.gradle.kts:23-32 buildTypes.release без signingConfig; release.yml:233 `app-release-unsigned.apk`; нет crates/aira-gui/assets/locales, src/locale.rs, widgets/avatar.rs, docs/ANDROID_SIGNING.md",
+   "quality": "missing",
+   "note": "Ни одна фаза не начата в коммитах. Phase A заблокирована: ml-dsa 0.1.1 не разрешается при iroh 0.97 (facts-crates.md, эксперимент A)."
+  },
+  {
+   "feature": "M10 Mobile: Android",
+   "evidence": "crates/aira-ffi/src/{lib.rs,runtime.rs,callbacks.rs,types.rs}; mobile/android/app/src/main/AndroidManifest.xml:37-40 AiraDaemonService foregroundServiceType=dataSync, :55-62 FcmService; push/UnifiedPushReceiver.kt; release.yml:155-241 android job; commit 2c25340",
+   "quality": "works-but-rough",
+   "note": "APK публикуется неподписанным (release.yml:233); runtime.rs:65 использует `MasterSeed::from_phrase` (Desktop m=256MB), Platform::Mobile нигде в production не используется (только handler.rs:964 тест). Без сети в ядре — «мёртвая оболочка» (release-audit §5.5.3)."
+  },
+  {
+   "feature": "M12 REALITY + Tor transport",
+   "evidence": "crates/aira-net/src/transport/{reality.rs,tor.rs,fingerprint.rs}; aira-net/Cargo.toml:49-50 features reality/tor (tor = tokio-socks); tor.rs:3 «Uses a SOCKS5 proxy (either a local tor daemon or arti)»; reality.rs:3 «when a Rust uTLS library becomes available», :94-95 fallback_addr; commits b0de791, 32a5ff7",
+   "quality": "works-but-rough",
+   "note": "п.2 «интеграция с arti» — нет, только внешний SOCKS5; п.3 uTLS-мимикрия — отложена (комментарий reality.rs:3); п.5 тест active probing — только unit."
+  },
+  {
+   "feature": "M13 Крипто-бэкенд aws-lc-rs",
+   "evidence": "crates/aira-core/src/crypto/{awslc.rs,compat_tests.rs}; aira-core/Cargo.toml:51-54 features fips/compat-test; Cargo.toml:35 aws-lc-rs 1.16 unstable; commit 16f3c2f",
+   "quality": "production",
+   "note": "Миграция PQ-API затронет и awslc.rs:129-134 (release-audit C15)."
+  },
+  {
+   "feature": "M14 WASM-ядро для браузера",
+   "evidence": "нет crates/aira-wasm; Cargo.toml members (8 крейтов, без wasm); grep wasm-bindgen/redb-opfs в Cargo.toml → 0; ci.yml без wasm32 target",
+   "quality": "missing",
+   "note": "Только спека (commit 9333e78). redb-opfs отсутствует на crates.io (facts-crates.md) — риск п.14.4."
+  },
+  {
+   "feature": "M15 Голосовые заметки",
+   "evidence": "grep opus/cpal/rodio в Cargo.toml → 0; spec/06-protocol-messaging.md:117 §6.11 MediaType::Audio описан",
+   "quality": "missing",
+   "note": "Только спека (commit 37725ef)."
+  },
+  {
+   "feature": "M16 Разметка сообщений",
+   "evidence": "нет crates/aira-core/src/markup.rs; grep pulldown в Cargo.toml → 0; spec/08-protocol-security.md:140 §6.25",
+   "quality": "missing",
+   "note": "Только спека (commit 37725ef)."
+  },
+  {
+   "feature": "M17 Desktop-клиент на Tauri",
+   "evidence": "нет каталога desktop/; grep tauri в Cargo.toml → 0",
+   "quality": "missing",
+   "note": "Только спека (commit 971e038)."
+  }
+ ],
+ "findings": [
+  {
+   "title": "Спека смешивает два разных relay: iroh live-relay (§5.1) и store-and-forward mailbox (§6.3b/§6.5/§11B.5) — без явного разделения ролей",
+   "severity": "blocker",
+   "evidence": "spec/03-network.md:16 «Relay fallback через DERP-серверы при симметричном NAT» (live forwarding, iroh); spec/04-protocol-wire.md:192-215 §6.3b «Доверенный relay хранит зашифрованные конверты… TTL 7 дней… Relay идентифицируется по iroh NodeId, выбирается пользователем»; spec/05-protocol-versioning.md:61-77 §6.5 «relay-A/mailbox-abc123… Пользователь может использовать разные relay для разных контактов»; habr_article.md:308 «fallback на iroh WebSocket relay», :591-595 «iroh relay — точка доверия… self-hosted relay»; код: relay.rs:149 RelayServer — обычный ALPN-хендлер `aira/1/relay` (lib.rs:44) на iroh-узле, не iroh-relay; endpoint.rs:80 presets::N0 — только публичные relay n0",
+   "impact": "Sonnet 5 не поймёт, что «свой relay на mail-сервере» = два процесса (iroh-relay для NAT + aira-relay для mailbox). Публичные relay n0 для iroh 0.9x отключаются 30.09.2026 — без своего iroh-relay клиенты за NAT не соединятся вообще.",
+   "recommendation": "В §5.1 переименовать DERP→relay, добавить §5.1.1 «Собственный iroh-relay + iroh-dns-server (pkarr)» и `AiraPreset`; в §6.3b явно назвать второй процесс `aira-relay` (крейт crates/aira-relay, ALPN aira/2/relay) и сослаться на §11B.5. Ввести в глоссарий §20 термины «transport relay» и «mailbox relay»."
+  },
+  {
+   "title": "Формула mailbox ID расходится в трёх местах (спека, код, статья)",
+   "severity": "high",
+   "evidence": "spec/05-protocol-versioning.md:69 «Mailbox ID = BLAKE3(shared_secret ‖ \"mailbox\")»; crates/aira-net/src/relay.rs:28,83-85 `derive_key(\"aira/relay/mailbox/v1\", shared_secret)`; habr_article.md:367 «Mailbox ID = BLAKE3(ML-DSA_A ‖ ML-DSA_B)» (линкуемо — противоречит цели §6.5 «relay не может связать чаты»); release-audit §4.3 предлагает v2: две коробки на пару `aira/relay/mailbox/v2/<dir>`",
+   "impact": "Статья публично обещает нелинкуемость, но описывает линкуемую формулу; при внедрении v2 придётся править §6.5, docs/KEY_CONTEXTS.md и статью одновременно.",
+   "recommendation": "Зафиксировать в §6.5 формулу v2 (две коробки по направлению, owner/sender-ключи из shared secret), перечислить контексты в docs/KEY_CONTEXTS.md, исправить habr_article.md:367."
+  },
+  {
+   "title": "§11B.5 обещает квоты «на отправителя», PoW для не-контактов, 1 GB cap и приоритет GC — в relay.rs ничего из этого нет, аутентификации нет вовсе",
+   "severity": "blocker",
+   "evidence": "spec/13-threat-model.md:436-462 «30 deposits/min на отправителя; PoW (16 бит) на каждый deposit от не-контактов; 1 GB total storage cap; GC каждые 6 часов; Приоритет: mailbox'ы с недавним retrieve»; spec/13-threat-model.md:9-31 таблица «Amplification attack → authenticated deposits»; код relay.rs:34-48 `RelayRequest::{Deposit{mailbox_id,envelope}, Retrieve{mailbox_id}, Ack, DeleteMailbox{mailbox_id}}` — нет поля отправителя/подписи; relay.rs:93-112 RelayConfig только max_envelopes=100, max_bytes=10MB, max_envelope_size=64KB, ttl=7d; relay.rs:265-272 Retrieve и :299-302 DeleteMailbox доступны любому, кто знает mailbox_id; relay.rs:174-190 GC по `last_activity` коробки, а не по возрасту конверта",
+   "impact": "Любой, узнавший mailbox_id (32 байта в трафике к relay), может прочитать/удалить чужую коробку; отправитель не ограничен; relay без cap упирается в память (HashMap в RAM, relay.rs:150 — не переживает рестарт).",
+   "recommendation": "Заменить §11B.5 + §6.3b на протокол v2 (release-audit §4.3): Register/Deposit/Retrieve/Ack с подписями owner_sk/sender_sk + relay_nonce, TTL на конверт, redb-персистентность, intro-mailbox с PoW ≥ 20 бит. Старый ALPN aira/1/relay удалить."
+  },
+  {
+   "title": "§11B.5.1 (RelayHello, RelayCapabilities, RelayMigration, multi-relay) и §6.3 MailboxConfig/NotificationEndpoint — отсутствуют в коде полностью",
+   "severity": "high",
+   "evidence": "spec/13-threat-model.md:464-503; spec/04-protocol-wire.md:216-248 «Push endpoint заложен в wire format сейчас… предотвращает breaking change»; grep MailboxConfig|NotificationEndpoint|RelayHello|RelayCapabilities|RelayMigration|RELAY_PROTOCOL_VERSION по crates/ → 0 совпадений (только bip39_wordlist «puzzle»)",
+   "impact": "Утверждение спеки «заложено в wire format» ложно — при добавлении push для Android (UnifiedPushReceiver.kt уже есть) будет breaking change relay-протокола, от которого спека предостерегает («урок SimpleXMQ»).",
+   "recommendation": "В M21 сразу вводить RelayHello v2 и Register с notification_endpoint; в §6.3 убрать фразу «заложено сейчас» или пометить «реализуется в M21»."
+  },
+  {
+   "title": "§6.3b: «relay выбирается пользователем» vs §11B.5.1 «несколько relay» vs код: relay нигде не настраивается",
+   "severity": "high",
+   "evidence": "spec/04-protocol-wire.md:211 «выбирается пользователем»; spec/13-threat-model.md:497-502 «один mailbox на нескольких relay»; spec/06-protocol-messaging.md:105 «settings.postcard — настройки (TTL, relay, etc.)»; crates/aira-daemon/src/types.rs DaemonRequest: нет SetRelay/GetRelay; CLI commands.rs: нет /relay; RelayClient::new(endpoint, relay_addr) relay.rs:353 — адрес приходит только из тестов",
+   "impact": "Спека §10 (IPC) не содержит команд управления relay; при реализации M20/M21 придётся расширять §8 IPC и §9 CLI без готового дизайна.",
+   "recommendation": "Добавить в spec/10-daemon-ipc.md запросы `GetRelays/SetRelays`, событие `RelayStatus`; в spec/11-cli.md команду `/relay`; в контакт-запись (§7.x/§9) поле `relays: Vec<EndpointAddr>`."
+  },
+  {
+   "title": "PoW на ContactRequest описан как защита «v0.1», но ContactRequest не существует на проводе и нигде не проверяется",
+   "severity": "blocker",
+   "evidence": "spec/15-spam.md:17-58 §13.2a/b «Contact Request (v0.1)… Сложность ~1 с (≈20 бит)»; spec/13-threat-model.md:23 «Спам → PoW (20 бит), rate limiting, block list»; код: crates/aira-core/src/spam.rs:14 POW_DIFFICULTY_BITS=20, :60-75 verify_pow, :111-180 RateLimiter; но proto.rs:11 `enum Message` не содержит ContactRequest (grep → только spam.rs); grep `spam::` вне aira-core → 0; handshake.rs без puzzle",
+   "impact": "Заявленная в статье и спеке anti-spam модель «contact-first» фактически отсутствует: любой узел может инициировать handshake без стоимости.",
+   "recommendation": "M22: добавить `Message::ContactRequest` в proto.rs (с nonce получателя + timestamp; verifier задаёт difficulty, не запрос — release-audit C7), проверять в daemon handler и в handshake-хендлере; §13.2 переписать под adaptive difficulty из §11B.2."
+  },
+  {
+   "title": "§11B.2 Adaptive Client Puzzles и §11B.1 Tier 3 «PoW обязателен» — в коде нет puzzle, tiers не связаны с PoW",
+   "severity": "high",
+   "evidence": "spec/13-threat-model.md:342-383 AdaptivePuzzle 16→28 бит «перед PQ handshake»; :315 «Tier 3 → PoW обязателен для любого взаимодействия»; код ratelimit.rs:5 комментарий «Tier 3 — Strangers: 5 msg/min + PoW required», но limiter_for_tier (ratelimit.rs:24-40) выдаёт только governor-квоту; grep AdaptivePuzzle|puzzle по crates → 0; connection.rs:78 PeerTier есть, ConnectionManager не используется демоном (демон без сети)",
+   "impact": "CPU-DoS через ML-KEM/ML-DSA handshake не ограничен ничем; таблица времён в §11B.2 к тому же занижена ~5–10× (release-audit §5.3).",
+   "recommendation": "В M22 реализовать `AdaptivePuzzle` в aira-core (общий с ContactRequest), выдавать в `HandshakeChallenge` до PQXDH; в §11B.2 пересчитать таблицу (16 бит ≈ 10 мс, 20 ≈ 0.2 с, 24 ≈ 3 с, 28 ≈ 50 с однопоточно)."
+  },
+  {
+   "title": "Спека НЕ содержит защиты от массовой генерации identity и прямо не предусматривает «стоимость первого ключа»",
+   "severity": "medium",
+   "evidence": "grep Sybil|генерац|puzzle|PoW по spec/: Sybil только в §11B.4 (DHT, 13-threat-model.md:410-434: IP diversity, signed records, PoW 16 бит на publish); §13.2 PoW per-request; §11B.2 puzzle per-connection; seed.rs:29-47 Argon2id 256MB — защита seed-фразы, не anti-Sybil; identity детерминирован из seed (§5.2 pseudonyms — новый pseudonym на каждый /mykey, spec/03-network.md:43-49) — т.е. спека сама поощряет много ключей на пользователя",
+   "impact": "Идея владельца «ресурсоёмкий PoW при создании первого ключа» противоречит §5.2 (per-contact pseudonyms: у пользователя десятки ключей) и модели угроз: цена ключа амортизируется, а DDoS relay идёт с бесплатных Ed25519 EndpointId.",
+   "recommendation": "Не вводить PoW на identity как основную меру (согласуется с release-audit §5.3). Добавить в §11B новый подраздел «11B.10 Стоимость identity»: per-action adaptive PoW (ContactRequest, intro-mailbox, handshake от незнакомца), лимит регистраций mailbox на EndpointId/сутки, опционально IdentityStamp (Hashcash над детерминированным pubkey) как публично проверяемый штамп."
+  },
+  {
+   "title": "Версии зависимостей в спеке/CLAUDE.md/статье устарели и внутренне противоречивы",
+   "severity": "medium",
+   "evidence": "spec/12-dependencies.md:8 «Networking (iroh ~1.0, вышел из RC-серии 0.97+)» vs :15 `iroh = \"0.97\"` (1.0 = 2026-06-15, 1.1.0 = 2026-08-25 по facts-crates.md); :21 `ml-dsa = \"0.1\" (≥0.1.0-rc.4)` vs Cargo.lock 0.1.0-rc.5 vs stable 0.1.1; :20 ml-kem 0.2 (stable 0.3.2, feature deterministic удалена); :45 redb 2 (latest 4.2.0); spec/03-network.md:21-22, spec/01-overview.md:103, CLAUDE.md:14-16,110 iroh 0.97/redb 2; spec/18-milestones.md:308-309 «Опционально: bump iroh 0.97 → 1.0» (уже обязательно); spec/18-milestones.md:281 «getrandom 0.3: feature wasm_js» (iroh 1.1 → getrandom 0.4); habr_article.md:70-71,80-81,84 `ml-dsa = \"0.0\"`, iroh 0.97, redb 2; spec/20-appendix.md:57 «Spec v0.4» vs SPEC.md:4/spec/01-overview.md:4 «Версия: 0.2 | Дата: апрель 2026»",
+   "impact": "Sonnet 5 при реализации возьмёт из спеки неверные версии; §14.3 п.5 представляет миграцию iroh как опцию, хотя она блокер до 30.09.2026.",
+   "recommendation": "Обновить §10 (spec/12) на iroh 1.1 / iroh-blobs 0.103 / ml-dsa 0.1.1 / ml-kem 0.3 / redb 4 / getrandom 0.4 / rust-version 1.91; §5.1, §3 (01-overview), CLAUDE.md, §14.1 п.3, §14.3 п.5; унифицировать номер версии спеки; в habr_article.md обновить блок Cargo.toml."
+  },
+  {
+   "title": "§6.3b ссылается на iOS как обоснование relay; §5.1 использует термин DERP",
+   "severity": "low",
+   "evidence": "spec/04-protocol-wire.md:209 «На мобильных (iOS) фоновое соединение живёт ~30 сек — relay обязателен»; spec/01-overview.md:70 и spec/17-cross-platform.md:120 iOS исключён; spec/03-network.md:16 «DERP-серверы» (в iroh 1.x — relay, протокол iroh-relay)",
+   "impact": "Стейл-текст; читатель делает вывод, что relay нужен «для iOS», хотя он нужен для Android (foreground service) и любого офлайн-пира.",
+   "recommendation": "Заменить обоснование на Android/desktop-offline; DERP → «iroh-relay (WebSocket/TLS, QAD udp/7842)»."
+  },
+  {
+   "title": "§5.3 Bootstrap-ноды и §5.2b DHT описаны как часть архитектуры — в коде отсутствуют, discovery полностью на инфраструктуре n0",
+   "severity": "high",
+   "evidence": "spec/03-network.md:85-89 «Минимум 3 публичных bootstrap ноды… Список зашит в бинарник»; :79-83 DHT «поверх iroh-gossip или отдельным Kademlia»; spec/16-multidevice.md:40,57 DHT-запись; код: discovery.rs:6 «DHT discovery… will be implemented in a later milestone»; endpoint.rs:42-80 «default n0 discovery and relay», presets::N0; iroh-gossip не в зависимостях (facts-crates.md)",
+   "impact": "После 30.09.2026 без своего pkarr/DNS discovery (iroh-dns-server) узлы не найдут друг друга даже при живом relay; спека не описывает pkarr/DNS discovery вообще.",
+   "recommendation": "Переписать §5.2b/§5.3: вместо DHT/bootstrap — pkarr publish/resolve через собственный iroh-dns-server + relay-map; DHT перенести в «после релиза»; §14.4 (spec/16) переименовать «DHT запись» → «pkarr/DNS запись»."
+  },
+  {
+   "title": "habr_article.md заявляет M2 «Done» с relay mailboxes, PoW перед депозитом и mobile-Argon2 — не соответствует коду",
+   "severity": "high",
+   "evidence": "habr_article.md:604 «M2 | Networking: iroh, NAT traversal, relay mailboxes | Done»; :371-376 «Ring buffer… PoW перед депозитом… TTL 24-48 часов… Per-identity квоты» (в relay.rs: TTL 7 дней на коробку по last_activity, PoW нет, per-identity нет, ring buffer нет — при переполнении отказ relay.rs:233-252); :121 «на мобильных используются параметры m=64MB, t=4, p=4» — aira-ffi/src/runtime.rs:65 вызывает `from_phrase` (Desktop), Platform::Mobile только в тесте handler.rs:964; spec/18-milestones.md:291-293 «Platform::Mobile используется только в тестах»; :402 `ALPN_RELAY = b\"aira/1/relay\"` совпадает с lib.rs:44, но в проде не используется; :599 «v0.3.4 (апрель 2026)»",
+   "impact": "Публичная статья обещает работающую офлайн-доставку и anti-spam; релизный риск репутации. Также противоречие TTL: статья 24–48 ч vs спека 7 дней.",
+   "recommendation": "Перед публикацией/релизом: переписать раздел «Pairwise Relay Mailboxes» под v2 и статус «в M21»; убрать абзац про mobile-Argon2 (или пометить как отклонённое: разные соли ломают переносимость identity — seed.rs:33,39); таблицу roadmap обновить (M12/M13 уже Done, M2/M7 partial)."
+  },
+  {
+   "title": "docs/INSTALL.md обещает установку на 5 платформ, но продукт не обменивается сообщениями по сети; APK неподписан",
+   "severity": "blocker",
+   "evidence": "docs/INSTALL.md:27-145 (MSI/DMG/AppImage/APK 0.3.5); :133 «APK пока не подписан релизным ключом, только debug-подпись» — на деле release.yml:233 публикует `app-release-unsigned.apk`; демон без Endpoint (данность); README.md отсутствует (ls README* → нет)",
+   "impact": "Пользователь установит клиент, создаст identity, а отправка сообщений будет молча писать в redb. Неподписанный APK Android не установит без обхода.",
+   "recommendation": "M19 (демон в сети) и M9.6 Phase B (signing) — до релиза; INSTALL.md дополнить разделом «Сеть и relay» (какой relay используется по умолчанию); добавить README.md."
+  },
+  {
+   "title": "Спека повторяет §13 (spam) дословно внутри spec/14-groups.md — двойной источник правды",
+   "severity": "low",
+   "evidence": "spec/14-groups.md:410-471 (§13.1, §13.2 с тем же кодом ContactRequest) дублирует spec/15-spam.md:9-72",
+   "impact": "При правке §13.2 под M22 один из экземпляров устареет.",
+   "recommendation": "Удалить дубликат из spec/14-groups.md, оставить ссылку на spec/15-spam.md."
+  },
+  {
+   "title": "docs/THREAT_MODEL.md, требуемый §11, не существует",
+   "severity": "medium",
+   "evidence": "spec/13-threat-model.md:9 «Файл docs/THREAT_MODEL.md должен покрывать:»; ls docs → BOT_SDK.md, INSTALL.md, KEY_CONTEXTS.md",
+   "impact": "Для релиза приватного мессенджера отсутствие публичной threat model — репутационный и аудиторский риск.",
+   "recommendation": "Включить в M23 создание docs/THREAT_MODEL.md из таблицы §11 с честными пометками «реализовано/план» по каждой строке."
+  },
+  {
+   "title": "CI-матрица §15.7 обещает wasm32 и .aab — в ci.yml/release.yml их нет; CI на main красный",
+   "severity": "medium",
+   "evidence": "spec/17-cross-platform.md:204-212 строки «Android .apk / .aab», «Web (WASM) wasm32-unknown-unknown npm-пакет»; release.yml:20-32 только 4 desktop target + android job (apk); ci.yml:23-62 clippy/audit без wasm; facts-crates.md: CI run на 971e038 — Clippy и Security Audit FAILURE, cargo audit 17 уязвимостей",
+   "impact": "Релиз с красным CI и 17 advisories (quinn-proto 7.5 high, hickory-proto без фикса в 0.25) — блокер для «security-first» проекта; большинство уходит с iroh 1.1.",
+   "recommendation": "M18 закрывает quinn/hickory; M23 — зелёный audit/deny в CI как gate релиза; §15.7 пометить wasm/aab как «после релиза»."
+  },
+  {
+   "title": "Milestone 14–17 не имеют сетевого фундамента и не должны предшествовать релизу",
+   "severity": "medium",
+   "evidence": "spec/18-milestones.md:267-322 M14 зависит от relay-only режима (§14.3 п.3 «соединения только через relay по WebSocket») — relay в проде нет; M14.4 redb-opfs отсутствует на crates.io (facts-crates.md); M15 (324-351) и M16 (353-367) — чисто клиентские, протокол готов; M17 (369-392) переносит UI на Tauri поверх демона, который не в сети; §15.9 фронтенд из внешнего монорепо letar",
+   "impact": "Работа над M14–M17 до M18–M21 создаёт UI над неработающей доставкой и удвоит миграционный долг (iroh 1.1 API, протокол v2).",
+   "recommendation": "ДО релиза: M18 → M19a → M19 (+M19b) → M20 → M21 → M22 → M23. ПОСЛЕ: M16 (дешёвый, 1 неделя, безопасно), M15, M17, затем M14 (требует относительно стабильного relay-протокола и решения по redb-opfs: форк/vendoring wireapp/redb-opfs либо IndexedDB-fallback). В §14.3 п.5 и §14.1 п.3 обновить iroh 1.x / getrandom 0.4."
+  },
+  {
+   "title": "Расхождения спека↔код в ratchet/handshake делают текущий wire-протокол v1 непригодным для «релиза с обещанием совместимости»",
+   "severity": "blocker",
+   "evidence": "release-audit §2.5 C1–C7 (proto.rs EncryptedEnvelope без ratchet header; AEAD без AAD; PQ-шаг не стартует; handshake не PQXDH); handshake.rs:25 PROTOCOL_VERSION=1; spec/05-protocol-versioning.md:7-26 Capabilities{min_version,max_version,cipher_suites}; spec/18-milestones.md:158 требование регрессионного теста совместимости подписи v0.3.5→v0.3.6",
+   "impact": "Если релиз выйдет на v1, следующий же протокол v2 сломает совместимость с пользователями; спека §6.4 обещает «без breaking change».",
+   "recommendation": "Зафиксировать в §6.4: релизный протокол = v2 (min_version=max_version=2), v1 признаётся pre-release без гарантий; описать `Message::Ratchet{header, envelope}` в §6.1 и PQXDH-транскрипт в §4.5."
+  }
+ ],
+ "spec_vs_code_drift": [
+  "spec/03-network.md:16 «DERP-серверы» / §5.1 iroh 0.97 → код endpoint.rs:80 presets::N0 (публичные n0, отключаются 30.09.2026); своего relay/discovery в спеке нет.",
+  "spec/03-network.md:79-89 DHT + bootstrap-ноды «зашиты в бинарник» → discovery.rs:6 DHT не реализован; grep bootstrap по crates → только GUI Bridge.",
+  "spec/04-protocol-wire.md:192-248 §6.3: локальная очередь «daemon автоматически доставляет» + relay store-and-forward v0.1 + MailboxConfig/NotificationEndpoint → pending::dequeue не вызывается; RelayClient не используется демоном; MailboxConfig/NotificationEndpoint отсутствуют в коде.",
+  "spec/05-protocol-versioning.md:69 Mailbox ID = BLAKE3(shared_secret‖\"mailbox\") → relay.rs:28,85 derive_key(\"aira/relay/mailbox/v1\", shared_secret) → habr_article.md:367 BLAKE3(ML-DSA_A‖ML-DSA_B).",
+  "spec/13-threat-model.md:436-462 §11B.5 per-sender 30/min, PoW 16 бит для не-контактов, 1 GB cap, GC 6 ч с приоритетом → relay.rs:93-112 только per-mailbox 100/10MB/64KB/TTL 7д по last_activity; аутентификации запросов нет (relay.rs:34-48).",
+  "spec/13-threat-model.md:464-503 §11B.5.1 RELAY_PROTOCOL_VERSION/RelayHello/RelayCapabilities/RelayMigration/multi-relay → grep по crates → 0.",
+  "spec/13-threat-model.md:342-383 §11B.2 AdaptivePuzzle перед handshake; :315 Tier 3 «PoW обязателен» → grep puzzle → 0; ratelimit.rs:24-40 только governor-квоты; ConnectionManager не подключён к демону.",
+  "spec/15-spam.md:17-66 §13.2 ContactRequest v0.1 с PoW 20 бит и rate limit → spam.rs реализован, но proto.rs без ContactRequest, `spam::` нигде не импортируется; verify_pow берёт difficulty из запроса (C7).",
+  "spec/13-threat-model.md:9 «docs/THREAT_MODEL.md должен покрывать» → файла нет.",
+  "spec/18-milestones.md M2 п.3 DHT, п.5 bootstrap/relay-нода, п.8 «сообщение через relay при офлайн пире» → тест relay_offline.rs:18 есть, но только in-process; production-пути нет.",
+  "spec/18-milestones.md M7 п.2 obfs4/o5 через ptrs → obfs.rs:1-12 упрощённый XOR-keystream, Cargo.toml:75 ptrs закомментирован; п.6 nDPI/Wireshark → собственный классификатор dpi_simulator.rs.",
+  "spec/18-milestones.md M12 п.2 arti → tor.rs:3 SOCKS5 (tokio-socks), arti отсутствует; п.3 uTLS → reality.rs:3 «when a Rust uTLS library becomes available».",
+  "spec/18-milestones.md M10 п.5 «.apk сборка» → release.yml:233 публикует app-release-unsigned.apk; M9.6 Phase B не начата.",
+  "spec/18-milestones.md:291-293 и habr_article.md:121 про Platform::Mobile: спека — только в тестах (совпадает с кодом: runtime.rs:65 from_phrase = Desktop), статья утверждает обратное.",
+  "spec/12-dependencies.md:8 «iroh ~1.0, вышел из RC-серии 0.97+» vs :15 iroh = \"0.97\"; ml-dsa \"0.1\" vs lock rc.5 vs stable 0.1.1; ml-kem 0.2 vs 0.3.2 (deterministic удалён); redb 2 vs 4.2; getrandom 0.3 (spec/18:281) vs 0.4 в iroh 1.1.",
+  "spec/20-appendix.md:57 «Spec v0.4» vs SPEC.md:4 и spec/01-overview.md:4 «Версия: 0.2 | Дата: апрель 2026» (последние правки спеки 2026-07-30).",
+  "spec/17-cross-platform.md:204-212 §15.7 wasm32 и .aab в матрице CI → ci.yml/release.yml их нет.",
+  "spec/06-protocol-messaging.md:105 settings.postcard хранит relay → DaemonRequest (types.rs) без relay-команд; CLI без /relay.",
+  "spec/14-groups.md:410-471 дублирует spec/15-spam.md §13.1-13.2.",
+  "habr_article.md:599-613 roadmap: M2 Done, M12/M13 Planned → M12/M13 закоммичены (b0de791, 16f3c2f), M2 partial; :371-376 TTL 24-48 ч vs спека/код 7 дней."
+ ],
+ "open_questions": [
+  "Владелец: одна коробка на пару (§6.5 текущая) или две по направлению (release-audit §4.3 v2)? Определяет формулу в §6.5, KEY_CONTEXTS.md и habr_article.md:367.",
+  "Оставлять ли §11B.4 DHT anti-Sybil и §5.2b DHT в спеке релиза, если discovery переходит на pkarr/iroh-dns-server (§3.3 плана)? Предложение — перенести DHT в «после релиза».",
+  "Нужен ли IdentityStamp (Hashcash над детерминированным pubkey) как компромисс по «цене первого ключа», учитывая per-contact pseudonyms §5.2 (у одного пользователя десятки ключей)? Если да — куда класть штамп (в InvitationLink? в HandshakeInit?).",
+  "Платформенные Argon2-параметры: убирать ли Platform::Mobile из seed.rs (соли различаются → одна фраза даёт разные identity) и что писать в habr_article.md:121?",
+  "Релизный протокол — v2 с отказом от совместимости с 0.3.x (min_version=2)? Нужно явное решение владельца для §6.4.",
+  "redb-opfs отсутствует на crates.io — M14.4: vendoring из GitHub wireapp/redb-opfs, форк или IndexedDB-fallback? Отложено до после релиза, но §15.5 сейчас утверждает «готовый крейт от Wire».",
+  "Кто держит 80/443 на mail-сервере и открыт ли udp/7842 — влияет на §5.1.1 (вариант A/B nginx) в спеке.",
+  "Версия спеки: унифицировать на 0.5 (сентябрь 2026) в SPEC.md, spec/01-overview.md:4, spec/20-appendix.md:57?",
+  "Оставлять ли spec/14-groups.md §13 дубликат или удалить — нужен один источник для §13.2 перед M22."
+ ]
+}

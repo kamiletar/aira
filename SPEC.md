@@ -55,6 +55,6 @@
 
 | # | Раздел | Файл |
 |---|--------|------|
-| §16 | Порядок реализации (milestones) | [18-milestones.md](spec/18-milestones.md) |
+| §16 | Порядок реализации (milestones); §16.1 — релизный путь M18–M23 (сентябрь 2026) | [18-milestones.md](spec/18-milestones.md) |
 | §17+17A | Качество кода + Bot API | [19-quality.md](spec/19-quality.md) |
 | §18-19 | Открытые вопросы, соглашения | [20-appendix.md](spec/20-appendix.md) |

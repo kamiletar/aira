@@ -1,0 +1,208 @@
+# PQ-крипто: ml-dsa 0.1.1 / ml-kem 0.3.2 / iroh 1.1 — план миграции — результат исследования (2026-09-07)
+
+> Источник: raw `raw/a7f5c950e594124c7.json`. Выжимка — в `../release-audit-2026-09.md` §2.1.
+
+## Резюме
+
+Релиз v0.3.5 (тег, Cargo.lock) ушёл с ml-dsa 0.0.4 и ml-kem 0.2.3. ml-dsa 0.0.4 покрыт ТРЕМЯ advisories: RUSTSEC-2025-0144/CVE-2026-22705 (timing side-channel в Decompose при ПОДПИСИ, patched ≥0.1.0-rc.3), GHSA-5x2r-hc65-25f9/CVE-2026-24850 (верификация принимает подписи с повторяющимися hint-индексами, affected ≥0.0.4 <0.1.0-rc.4) и GHSA-h37v-hp6w-2pp8 (use_hint off-by-two при r0=0 → валидная подпись может не пройти верификацию, affected ≤0.1.0-rc.4). Все три закрыты в ml-dsa 0.1.1 (2026-06-05). Ни одно из них не меняет формат ключей/подписей: keygen = FIPS 204 Alg.6 (`key_gen_internal(seed)` → `SigningKey::from_seed(seed)`), подпись — детерминированный вариант Alg.2 с пустым ctx (`sign_deterministic(msg, &[])` сохранился в 0.1.1). Миграция ключей пользователям НЕ нужна: Aira не хранит ключи, а выводит их из seed при старте (identity.rs:32, handshake.rs:76-82), но ожидание «тот же seed → те же байты VK» нужно закрепить snapshot-тестом, т.к. адрес пользователя = VK bytes. Для ml-kem 0.3.2: `DecapsulationKey768::from_seed(d‖z)` внутри вызывает тот же `generate_deterministic(d,z)` (decapsulation_key.rs:51-53) → EK-байты совпадут с 0.2.3 при передаче seed = d‖z. Единственное место, где формат хранения реально затронут — сериализация ratchet-снапшота: ratchet.rs:442-444 пишет расширенную (2400 байт) форму DK через `encode_kem_decaps_key`, которую в 0.3 можно читать только через deprecated `ExpandedKeyEncoding::from_expanded_bytes`; лучше переключить снапшот на 64-байтный seed (`KeyExport::to_bytes` → `Seed`), сохранив чтение старого формата. Блокер: ml-dsa 0.1.1 не резолвится с iroh 0.97 (digest =0.11.0-rc.10), поэтому bump PQ-крейтов делается только вместе с iroh 1.1 (эксперимент C: резолвится, 15 ошибок в rustcrypto.rs + awslc.rs). Остальной RustCrypto (x25519-dalek 2, chacha20poly1305 0.10, argon2 0.5, rand 0.8) можно оставить: ml-dsa/ml-kem нового поколения не пересекаются с ними по типам, а конфликт rand_core (0.6 vs 0.10) обходится фичей `ml-kem/getrandom` и вызовом `encapsulate()` без RNG. iroh 1.1: PQ TLS (X25519MLKEM768) включается фичами `iroh/tls-aws-lc-rs` + `rustls/prefer-post-quantum` (только провайдер aws-lc-rs; ring не умеет; несовместимо с wasm-сборкой M14). aws-lc-rs 1.18 стабилизировал ML-DSA (`aws_lc_rs::signature::PqdsaKeyPair`, `unstable::signature` — deprecated alias) и перевёл FIPS на модуль 4.0 (ещё не сертифицирован NIST; сертифицированный 3.x — только в 1.17.x). Стандарты: SP 800-227 финал (сентябрь 2025), RFC 9881 (ML-DSA в X.509, октябрь 2025), FIPS 206 FN-DSA — draft (ожидается финал конец 2026/2027), HQC → FIPS 207 к 2027; X-Wing (draft-connolly-cfrg-xwing-kem-10, ISE stream) и draft-ietf-tls-ecdhe-mlkem-05 — всё ещё drafts, RFC нет; комбайнер Aira (draft-ounsworth-cfrg-kem-combiners-05) заброшен с 2024-08. Signal SPQR (реализация signalapp/SparsePostQuantumRatchet, формально верифицирована hax/F*+ProVerif) — иная модель «sparse»: ML-KEM Braid непрерывно, но EK/CT режутся на 42-байтные чанки с Reed–Solomon erasure-кодом и размазываются по каждому сообщению; в Aira «sparse» = полный CT 1088 байт раз в 50 сообщений (PQ_RATCHET_INTERVAL, ratchet.rs:30) — проще, но окно PQ-PCS шире и CT-сообщения выделяются размером (трафик-анализ/выборочный дроп, о чём прямо пишет Signal).
+
+## Факты (с источниками)
+
+- [high, 2026-09-07] Релиз v0.3.5 собран с ml-dsa 0.0.4, ml-kem 0.2.3, x25519-dalek 2.0.1, chacha20poly1305 0.10.1, argon2 0.5.3, aws-lc-rs 1.16.2 (git show v0.3.5:Cargo.lock). В рабочем дереве Cargo.lock уже содержит ml-dsa 0.1.0-rc.5 (незакоммичено, не компилируется: sha3 0.11.0-rc.6 vs keccak).  
+  <C:\web\aira\Cargo.lock (git show v0.3.5:Cargo.lock; deny.toml:39-45)>
+- [high, 2026-01-27] RUSTSEC-2025-0144 = CVE-2026-22705 = GHSA-hcp2-x6j4-29j7: timing side-channel в функции decompose (аппаратное деление r1/TwoGamma2 на данных, производных от секретных s2/t0) при ПОДПИСИ ML-DSA. CVSS 6.4 (AV:A/AC:H/PR:L). Affected ml-dsa ≤0.1.0-rc.2, patched ≥0.1.0-rc.3 (Barrett reduction, PR #1144). Опубликовано 2026-01-13, выпущено RustSec 2026-01-27.  
+  <https://rustsec.org/advisories/RUSTSEC-2025-0144.html>
+- [high, 2026-01-28] GHSA-5x2r-hc65-25f9 = CVE-2026-24850 (medium, 2026-01-28): верификация ML-DSA в RustCrypto принимала подписи с повторяющимися hint-индексами (проверка `<=` вместо строгого `<`, регрессия коммита b01c3b7 «Make ML-DSA signature decoding follow the spec #895»). Affected ml-dsa ≥0.0.4, <0.1.0-rc.4. Это ослабление строгости верификации (нестандартные подписи), формат честных подписей не затронут.  
+  <https://github.com/RustCrypto/signatures/security/advisories/GHSA-5x2r-hc65-25f9>
+- [high, 2026-02-02] GHSA-h37v-hp6w-2pp8 (medium, 2026-02-02): в use_hint при r0 = 0 прибавлялась 1 вместо вычитания (FIPS 204 Alg. 40, строки 3-4) → валидные подписи могли НЕ проходить верификацию. Affected ml-dsa ≤0.1.0-rc.4, исправлено PR #1194 («Fix use_hint when r0 = 0»), вошло в 0.1.0.  
+  <https://github.com/RustCrypto/signatures/security/advisories/GHSA-h37v-hp6w-2pp8>
+- [high, 2026-06-05] ml-dsa CHANGELOG 0.1.0 (2026-05-17): добавлены `SigningKey::{from_seed,to_seed}`, `signature::Keypair`, `KeyInit/KeyExport/Generate`; `signature` → v3; `sha3` → `shake`; `ctutils` для constant-time; удалён трейт `KeyGen` (заменён `KeyInit`+`Generate`); исправлены Wycheproof-тесты верификации, use_hint при r0=0, деление заменено на Barrett. 0.1.1 (2026-06-05) — только фикс фичи `module-lattice/alloc`. 0.0.4 (2025-04-10) — initial release.  
+  <https://raw.githubusercontent.com/RustCrypto/signatures/master/ml-dsa/CHANGELOG.md>
+- [high, 2026-09-07] ml-dsa 0.1.1 API (локальный registry): `pub type Seed = B32 = Array<u8,U32>` (lib.rs:86,93); `SigningKey::from_seed(xi: &Seed) -> Self` (signing.rs:55), `as_seed()/to_seed()` (signing.rs:102,115); `sign_deterministic(&self, M: &[u8], ctx: &[u8]) -> Result<Signature<P>, Error>` сохранён (signing.rs:428); `Signer::try_sign` использует детерминированный вариант (signing.rs:181-186); `sign_randomized<R: TryCryptoRng>` (signing.rs:377); `VerifyingKey::encode() -> EncodedVerifyingKey<P>` / `decode(&EncodedVerifyingKey<P>) -> Self` (verifying.rs:158,165); `Verifier<Signature<P>>` (verifying.rs:194); `Signature: TryFrom<&[u8]>` (lib.rs:131-133); `EncodedVerifyingKey<P> = Array<u8, VerifyingKeySize<P>>` (param.rs:292). Deps: hybrid-array 0.4, signature 3, module-lattice 0.2.3, shake 0.1, ctutils 0.4, zeroize 1.8.1.  
+  <C:\Users\Kami\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\ml-dsa-0.1.1\src\{lib,signing,verifying,param}.rs>
+- [high, 2026-05-10] ml-kem CHANGELOG 0.3.0 (2026-04-28): `Seed`-support (`DecapsulationKey::from_seed`), `kem::Kem`/`kem::FromSeed` трейты (kem 0.3), `KeyInit/KeySizeUser/KeyExport` для DK, `TryKeyInit/KeyExport` для EK, `EncodedSizeUser` заменён на `ExpandedKeyEncoding`, `from_expanded` deprecated; rand_core → 0.10, getrandom → 0.4, sha3 → 0.11, hybrid-array 0.4, ctutils вместо subtle; edition 2024, MSRV 1.85; УДАЛЕНЫ `Kem` struct и `KemCore` trait; добавлена валидация encapsulation-ключей (#179) и хэша expanded DK (#207); Wycheproof-векторы. 0.3.2 (2026-05-10): heap offload.  
+  <https://raw.githubusercontent.com/RustCrypto/KEMs/master/ml-kem/CHANGELOG.md>
+- [high, 2026-09-07] ml-kem 0.3.2 API (локальный registry): `pub type Seed = Array<u8,U64>` (lib.rs:96); `DecapsulationKey::from_seed(seed: Seed) -> Self` делает `let (d, z) = seed.split(); Self::generate_deterministic(d, z)` (decapsulation_key.rs:51-53) — т.е. seed = d‖z, тот же алгоритм, что `MlKem768::generate_deterministic(&d,&z)` в 0.2.3; `to_seed() -> Option<Seed>` (:96); `KeyExport::to_bytes(&self) -> Seed` для DK; `ExpandedKeyEncoding::{from_expanded_bytes,to_expanded_bytes}` (deprecated) для 2400-байтной формы; `EncapsulationKey::new(&Key<Self>) -> Result<Self, InvalidKey>` = `TryKeyInit` (encapsulation_key.rs:32,103), `KeyExport::to_bytes() -> Key<Self>` (:87); `Encapsulate::encapsulate_with_rng<R: rand_core-0.10 CryptoRng>(&self,&mut R) -> (Ciphertext<P>, SharedKey)` (:72-84, инфаллибельно); `Decapsulate::decapsulate(&self,&Ciphertext<P>) -> SharedKey` инфаллибельно (decapsulation_key.rs:168-180); kem 0.3 даёт `decapsulate_slice(&[u8]) -> Result<SharedKey, TryFromSliceError>` (kem-0.3.0/src/lib.rs:186) и `encapsulate()` без RNG при фиче `getrandom` (lib.rs:248); `pub type DecapsulationKey768/EncapsulationKey768` (lib.rs:250,254). Фичи: alloc(default), getrandom, hazmat, pem, pkcs8, zeroize — `deterministic` удалена.  
+  <C:\Users\Kami\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\ml-kem-0.3.2\src\{lib,decapsulation_key,encapsulation_key}.rs; kem-0.3.0\src\lib.rs>
+- [high, 2026-09-07] Текущий rustcrypto.rs (203 строки) использует удалённые API: `ml_dsa::KeyGen` + `MlDsa65::key_gen_internal(&B32)` (rustcrypto.rs:5,26-27), `ml_kem::KemCore`, `MlKem768::generate_deterministic(&d,&z)` (:6-9,20-21,53-54), `EncodedSizeUser`/`ml_kem::Encoded::<K>` (:87-116), `pk.encapsulate(&mut rand::thread_rng())` с rand 0.8 (:59-62), `ml_kem::Ciphertext::<MlKem768>::try_from` (:67). Сохраняются: `sign_deterministic(msg,&[])` (:33), `Signature::try_from(sig)` (:40), `VerifyingKey::encode/decode` (:76-88). Seed для ML-KEM уже делится на d/z через BLAKE3 контексты `aira/kem-keygen-d` / `aira/kem-keygen-z` (:50-51; docs/KEY_CONTEXTS.md:21-22).  
+  <C:\web\aira\crates\aira-core\src\crypto\rustcrypto.rs>
+- [high, 2026-09-07] awslc.rs тоже ломается bump'ом ml-kem: `kem_keygen` (awslc.rs:124-141) использует `ml_kem::{EncodedSizeUser, KemCore, MlKem768}` + `generate_deterministic` для получения expanded DK-байтов и загрузки в `aws_kem::DecapsulationKey::new(&ML_KEM_768, &dk_bytes)`. Также awslc.rs:12 импортирует `aws_lc_rs::unstable::signature::{PqdsaKeyPair, ML_DSA_65, ML_DSA_65_SIGNING}`. Модуль включается только фичами `fips`/`compat-test` (crypto/mod.rs:9-13); compat_tests.rs содержит 8 кросс-бэкендных тестов (same seed → same public key, cross sign/verify, cross encaps/decaps).  
+  <C:\web\aira\crates\aira-core\src\crypto\awslc.rs; crates\aira-core\src\crypto\compat_tests.rs:21-146>
+- [high, 2026-09-01] aws-lc-rs v1.18.0 (2026-08-07): ML-DSA API стабилизирован — `PqdsaKeyPair`, `PqdsaPublicKey`, `PqdsaPrivateKey`, `ML_DSA_44/65/87(_SIGNING)` переехали в `aws_lc_rs::signature`, фича `unstable` больше не нужна, доступно под `fips`; `unstable::signature` остаётся как deprecated-алиасы; `to_pkcs8` переименован в `to_pkcs8v1`; `parsed_verify_digest_sig` теперь всегда `Unspecified`. Одновременно `fips` переведён на AWS-LC-FIPS 4.0 (aws-lc-fips-sys 0.14.0), который ТОЛЬКО подан в NIST (Modules In Process), тогда как сертифицированный FIPS 140-3 модуль 3.x (Cert #5314/#5298) остаётся в aws-lc-rs <1.18.0 (ветка 1.17.x, последняя 1.17.4 от 2026-09-01). v1.18.1 (2026-09-01): aws-lc-sys 0.45.0 = AWS-LC 5.7.0.  
+  <https://github.com/aws/aws-lc-rs/releases/tag/v1.18.0>
+- [high, 2026-09-07] docs.rs aws-lc-rs 1.18.1 модуль `signature` содержит PqdsaKeyPair, PqdsaPrivateKey, PqdsaPublicKey, PqdsaSigningAlgorithm, PqdsaVerificationAlgorithm, ML_DSA_44/65/87 и *_SIGNING. `PqdsaKeyPair::from_seed` документирован для FIPS (v1.17.3, PR #1174): ключи, построенные из expanded-формы, нельзя пересериализовать в PKCS#8 (там только seed).  
+  <https://docs.rs/aws-lc-rs/1.18.1/aws_lc_rs/signature/index.html>
+- [high, 2026-09-07] iroh 1.1.0 (локальный registry Cargo.toml): default = [metrics, fast-apple-datapath, portmapper, tls-ring]; фичи `tls-aws-lc-rs = [noq/aws-lc-rs, iroh-relay/tls-aws-lc-rs]` и `tls-ring = [noq/ring, iroh-relay/tls-ring]`; зависимости: noq 1.2.0 (features rustls, default-features=false), rustls 0.23.33 default-features=false, ed25519-dalek >=3.0.0-rc.0, rand 0.10, reqwest 0.13. iroh-relay 1.1.0 `tls-aws-lc-rs` включает rustls/aws-lc-rs, tokio-rustls/aws-lc-rs, tokio-websockets/aws_lc_rs, hickory-resolver/https-aws-lc-rs.  
+  <C:\Users\Kami\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\iroh-1.1.0\Cargo.toml; iroh-relay-1.1.0\Cargo.toml:71-107>
+- [high, 2026-09-07] Блог n0 «Iroh post-quantum key exchange»: PQ key exchange в iroh включается через фичу iroh `tls-aws-lc-rs` + фичу rustls `prefer-post-quantum` (пример: `iroh = { version = "0.98", default-features = false, features = ["tls-aws-lc-rs"] }`, `rustls = { version = "0.23.38", default-features = false, features = ["prefer-post-quantum"] }`); `prefer-post-quantum` включает X25519MLKEM768 (draft-ietf-tls-ecdhe-mlkem) как предпочтительную группу, но не принуждает — с пиром без PQ идёт fallback; провайдер ring PQ не поддерживает. Идентичность endpoint остаётся Ed25519 (raw public keys TLS) → активный MITM с CRQC не закрыт; n0 «ждёт индустриального консенсуса» по не-Ed25519 EndpointId.  
+  <https://www.iroh.computer/blog/iroh-post-quantum-handshakes>
+- [high, 2026-07-29] rustls 0.23.43 (29 июля 2026): провайдер по умолчанию aws-lc-rs (фича `aws_lc_rs`), альтернативный `ring`; `default-features = false` убирает aws-lc-rs; провайдер выбирается через `with_crypto_provider` или `CryptoProvider::install_default`. Aira сейчас: `rustls = { version = "0.23", default-features = false, features = ["std","ring"] }` (Cargo.toml) и `cargo tree -i rustls` показывает только ring через iroh/hyper-rustls.  
+  <https://docs.rs/rustls/latest/rustls/>
+- [high, 2026-09-07] Aira не персистит ML-DSA/ML-KEM ключи: Identity выводится из seed при каждом старте (`Identity::from_seed` identity.rs:32; `public_key_bytes()` = `encode_verifying_key` identity.rs:82-83), handshake выводит `aira/x25519/0` и `aira/mlkem/0` из seed (handshake.rs:76-82, 189-195); aira-storage хранит только storage_key-производные и сессии (`sessions` — RatchetState, lib.rs:10). Единственная персистентная PQ-структура — снапшот ratchet: `pq_mlkem_dk` сериализуется через `encode_kem_decaps_key` (expanded 2400 байт) в ratchet.rs:442-444 и читается `decode_kem_decaps_key` в ratchet.rs:488-492.  
+  <C:\web\aira\crates\aira-core\src\{identity,handshake,ratchet}.rs; crates\aira-storage\src\lib.rs:10>
+- [high, 2026-09-07] PQ ratchet Aira: `PQ_RATCHET_INTERVAL = 50` (ratchet.rs:30), `should_pq_step` = pq_enabled && send_since_pq ≥ 50 && peer_pq_ek.is_some() (ratchet.rs:369-371); шаг = encaps к peer EK → `pq_mix` в root_key → новая KEM-пара из `aira/ratchet/pq-rekey` → отправка (ct, ek_bytes) (ratchet.rs:374-395); приём: decaps → pq_mix (ratchet.rs:397-402). Спека §4.4 заявляет шаг «при смене направления или каждые N=50».  
+  <C:\web\aira\crates\aira-core\src\ratchet.rs:30,369-404; spec/02-crypto.md:62-110>
+- [high, 2025-10-02] Signal SPQR (блог 02.10.2025): Sparse Post-Quantum Ratchet работает параллельно Double Ratchet, ключи смешиваются через KDF («Triple Ratchet»); ML-KEM EK/CT режутся на чанки и передаются с КАЖДЫМ сообщением с помощью erasure-кодов (любые N из потока чанков восстанавливают сообщение), что даёт равномерный размер сообщений и устойчивость к выборочному дропу «больших» сообщений; допускается безопасный downgrade для старых клиентов; код формально верифицирован. Основано на Eurocrypt 2025 (ePrint 2025/078) и USENIX Security 2025 (Auerbach et al.; альтернативный KEM «Katana»).  
+  <https://signal.org/blog/spqr/>
+- [high, 2026-09-07] Reference-реализация signalapp/SparsePostQuantumRatchet (Rust): `chain.rs` — симметричный ratchet (FS); `encoding/polynomial.rs` — систематические Reed–Solomon erasure-коды; `v1/` — «ML-KEM Braid Protocol» (публичная часть ratchet вместо DH); чанки по 42 байта; верифицирована hax/F* (panic-free, корректность арифметики) + ProVerif-модели. На crates.io крейта `spqr` нет (404).  
+  <https://github.com/signalapp/SparsePostQuantumRatchet>
+- [high, 2026-09-07] IETF datatracker (2026-09-07): draft-connolly-cfrg-xwing-kem rev 10 (2026-09-03), поток ISE, RFC не присвоен; draft-ietf-tls-ecdhe-mlkem rev 05 (2026-08-10), RFC нет; draft-ietf-tls-hybrid-design rev 16 (2026-07-15), RFC нет; draft-ietf-tls-mlkem rev 10 (2026-09-03); draft-ietf-lamps-kyber-certificates rev 11 (2026-03-06), RFC нет; draft-ietf-lamps-pq-composite-sigs rev 19 (2026-08-26); draft-ounsworth-cfrg-kem-combiners rev 05 — последнее обновление 2024-08-03 (заброшен). RFC 9881 «Algorithm Identifiers for ML-DSA» опубликован в октябре 2025.  
+  <https://datatracker.ietf.org/api/v1/doc/document/draft-connolly-cfrg-xwing-kem/ ; https://www.rfc-editor.org/rfc/rfc9881.json>
+- [medium, 2026-09-07] NIST: SP 800-227 (Recommendations for KEMs) финализирован в сентябре 2025; FIPS 206 (FN-DSA/Falcon) — draft, подан на утверждение 28.08.2025, финал ожидается конец 2026 – начало 2027; HQC выбран в марте 2025 как дополнительный KEM, стандарт (FIPS 207) ожидается к 2027.  
+  <https://www.encryptionconsulting.com/decoding-nist-pqc-standards/>
+- [high, 2026-07-04] Атаки/баги на реализации ML-DSA/ML-KEM 2025–2026 (сводка D.J. Bernstein «Bugs happen», 04.07.2026): CVE/баги ML-DSA в 2026 у libcrux (PR #1347, #1348), libgcrypt (CVE-2026-41990), RustCrypto (CVE-2026-22705 и CVE-2026-24850), wolfSSL (CVE-2026-3503, ePrint 2026/1032); ранее KyberSlash1/2 (timing в reference Kyber 2017–2023, большинство библиотек пропатчены). Академические side-channel работы: ePrint 2025/276 (masked ML-DSA, y), ePrint 2025/582 (efficient SCA on ML-DSA), IEEE HOST 2025 (CPA на HW ML-DSA), SPA-assisted CCA на ML-KEM (Springer 2025) — физические атаки, к софтверному RustCrypto напрямую не относятся. Вывод Bernstein: сохранять ECC+PQ-гибрид (что Aira и делает).  
+  <https://blog.cr.yp.to/20260704-bugs.html>
+- [high, 2026-09-07] RustSec advisory-db (GitHub contents, 2026-09-07): для ml-dsa только RUSTSEC-2025-0144; директорий crates/ml-kem, redb, egui, eframe, x25519-dalek, chacha20poly1305, argon2, blake3, iroh, noq, hybrid-array НЕТ (advisories отсутствуют); tokio — RUSTSEC-2021-0072, 2021-0124, 2023-0001, 2023-0005, 2025-0023 (все старше tokio 1.50.0 из Cargo.lock; cargo audit на HEAD tokio не флагует). 17 уязвимостей cargo audit относятся к quinn-proto/hickory-proto/h2/crossbeam-epoch/rustls-webpki/quick-xml/webbrowser (см. facts-crates.md).  
+  <https://api.github.com/repos/rustsec/advisory-db/contents/crates>
+- [high, 2026-09-07] Эксперимент A (facts-crates.md): ml-dsa 0.1.1 при iroh 0.97 НЕ резолвится (iroh-base 0.97 пинит digest =0.11.0-rc.10, shake 0.1 требует digest ^0.11 stable). Эксперимент C: iroh 1.1 + iroh-blobs 0.103 + ml-dsa 0.1.1 + ml-kem 0.3.2 резолвится; 15 ошибок компиляции в crates/aira-core/src/crypto/rustcrypto.rs (+2 вывода типов handshake.rs:82,195). В registry уже скачаны rand 0.10.2, rand_core 0.10.0/0.10.1, getrandom 0.4.2, kem 0.3.0, signature 3.0.0; x25519-dalek 3 / chacha20poly1305 0.11 / argon2 0.6 / aws-lc-rs 1.18 НЕ скачаны (в резолве не участвовали).  
+  <C:\web\aira\.claude\docs\audit-2026-09\facts-crates.md; ~/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/>
+- [medium, 2026-09-07] getrandom (0.3/0.4) на `wasm32-unknown-unknown` — «unsupported target»: нужен opt-in backend через cfg-флаг `getrandom_backend` (для браузера `wasm_js` + фича `wasm_js`), иначе ошибка компиляции; есть backend `unsupported` и `custom`. Это касается `ml-kem/getrandom`, `kem/getrandom`, rand 0.10 при сборке ядра для M14.  
+  <https://docs.rs/getrandom/latest/getrandom/#opt-in-backends>
+- [high, 2026-09-07] spec/17-cross-platform.md:139-141: aira-core собирается под wasm32-unknown-unknown, исключение — aws-lc-rs (feature fips) под wasm не работает. Следовательно PQ-TLS iroh (требует aws-lc-rs) недоступен в браузерной сборке M14.  
+  <C:\web\aira\spec\17-cross-platform.md:139-141>
+- [high, 2026-09-07] Milestone 9.6 Phase A (spec/18-milestones.md:140-152) предписывает ml-dsa 0.0.4 → 0.1.0+, переписать rustcrypto.rs, проверить cross-backend compat тест; RUSTSEC-2025-0144 заглушён в deny.toml:39-45 (ignore) — «нужен реальный upgrade».  
+  <C:\web\aira\spec\18-milestones.md:140-152; deny.toml:39-45>
+
+## Следствия для Aira
+
+- Релиз v0.3.5 подписывает сообщения библиотекой с тремя известными дефектами (timing leak при подписи — CVE-2026-22705; ошибка use_hint, из-за которой редкие валидные подписи отвергаются; нестрогая верификация hint'ов — CVE-2026-24850). Для выпуска релиза bump ml-dsa до 0.1.1 обязателен, ignore RUSTSEC-2025-0144 в deny.toml:45 нужно удалить.
+- Миграция ключей пользователей НЕ требуется: Aira хранит только seed-фразу и выводит ML-DSA/ML-KEM/X25519 ключи при старте (identity.rs:32, handshake.rs:76-82). Алгоритмы keygen не менялись (FIPS 204 Alg.6 / FIPS 203 Alg.16), поэтому адрес (VK bytes) и EK должны совпасть байт-в-байт. Это надо ЗАКРЕПИТЬ snapshot-тестом, потому что адрес пользователя = VK-байты, а контакты хранятся по адресу.
+- PQ-bump неотделим от миграции iroh 0.97 → 1.1 (digest pin в iroh-base 0.97). Порядок: сначала iroh 1.1 (aira-net/endpoint.rs, 3 ошибки), затем в том же PR ml-dsa 0.1.1 + ml-kem 0.3.2 + kem 0.3 (rustcrypto.rs, awslc.rs, handshake.rs). Это одновременно закрывает quinn-proto RUSTSEC-2026-0185 и hickory-proto 0118/0119.
+- Остальной RustCrypto-стек трогать не нужно: x25519-dalek 2, chacha20poly1305 0.10, argon2 0.5, rand 0.8 остаются (ml-dsa/ml-kem с ними типами не пересекаются). Конфликт rand_core 0.6 (rand 0.8) vs 0.10 (ml-kem) обходится фичей `ml-kem/getrandom` и вызовом `ek.encapsulate()` без RNG; подпись ML-DSA детерминированная — RNG не нужен. x25519-dalek 3 / chacha20poly1305 0.11 / argon2 0.6 — отдельный, необязательный для релиза milestone (хранить формат Argon2 неизменным!).
+- Персистентные ratchet-снапшоты (ratchet.rs:442-444) хранят expanded DK (2400 байт) — после bump читать их можно только через deprecated `ExpandedKeyEncoding::from_expanded_bytes`. Рекомендуется перевести снапшот на 64-байтный seed (`KeyExport::to_bytes() -> Seed`) c поддержкой чтения старого формата по длине (2400 → expanded, 64 → seed) — совместимость с базами v0.3.5.
+- ml-kem 0.3 добавил валидацию EK (`TryKeyInit::new` → `InvalidKey`) — `decode_kem_encaps_key` наконец отвергает некорректные EK (FIPS 203 §7.2 check), чего в v0.3.5 (`from_bytes` без проверки) не было. Нужно обновить тесты на «невалидный EK → ошибка».
+- PQ-TLS на транспорте (X25519MLKEM768 в QUIC-handshake iroh) доступен: `iroh = { default-features=false, features=["tls-aws-lc-rs","metrics","portmapper",...] }` + `rustls = { features=["aws-lc-rs","prefer-post-quantum"] }`. Цена: нативная сборка aws-lc (cmake/nasm на Windows), несовместимость с wasm (M14) и с текущим `rustls/ring` — нужна cargo-фича `pq-tls` в aira-net, по умолчанию для desktop/Android, выключена для wasm. Идентичность транспорта остаётся Ed25519 — это ограничение iroh, а не Aira; на уровне протокола Aira уже аутентифицирует ML-DSA-65.
+- aws-lc-rs: для `fips`-бэкенда есть развилка — 1.17.x (сертифицированный FIPS 3.x модуль, но ML-DSA только в `unstable`) или 1.18.x (ML-DSA стабилен, FIPS 4.0 ещё не сертифицирован). Для релиза `fips` остаётся опциональной фичей; рекомендация — 1.18 (стабильный API `aws_lc_rs::signature::PqdsaKeyPair`), с пометкой в README, что сертификация 4.0 в процессе.
+- Гибридный комбайнер Aira ссылается на draft-ounsworth-cfrg-kem-combiners (kem.rs:6, заброшен с 2024-08). Ни X-Wing, ни ecdhe-mlkem ещё не RFC (сентябрь 2026), поэтому менять wire-format до релиза не нужно; но стоит задокументировать в spec/02-crypto.md, что формула `BLAKE3-KDF(ctx, counter‖H(ss1)‖H(ss2)‖ct1‖ct2)` — Aira-специфична и ссылка на draft устарела; кандидат на v0.5 — X-Wing-подобная схема с включением EK в KDF.
+- Сравнение с Signal SPQR: Aira «sparse во времени» (полный CT раз в 50 сообщений, ratchet.rs:30), SPQR «sparse по байтам» (42-байтные чанки с erasure-кодом в каждом сообщении, непрерывный ML-KEM Braid). Следствия для Aira: (а) окно без PQ-PCS до 50 сообщений; (б) сообщения с pq_kem_ct на 1088+1184 байт больше остальных — трафик-анализ и целевой дроп PQ-шагов (Signal прямо указывает этот вектор); (в) спека §4.4 обещает шаг «при смене направления», а код (`should_pq_step`) шагает только по счётчику ≥50 — расхождение спеки и кода нужно закрыть до релиза (реализовать direction-change trigger или поправить спеку). Полный SPQR-chunking — тема v0.5, не релиз-блокер.
+- Для браузерной версии (M14): ml-dsa/ml-kem 0.3 — чистый Rust, собираются под wasm; но `getrandom 0.4` требует `--cfg getrandom_backend="wasm_js"` + фичу `wasm_js`, а aws-lc-rs (и, значит, PQ-TLS iroh) под wasm недоступен — в wasm остаётся ring-провайдер с классическим X25519 на транспорте, PQ только на уровне протокола Aira (PQXDH + PQ-ratchet).
+
+## Рекомендуемый дизайн
+
+## 1. Cargo.toml (workspace) — целевые версии
+
+```toml
+# сеть (обязательно вместе с PQ-bump — иначе digest-конфликт)
+iroh        = { version = "1.1", default-features = false, features = ["metrics", "portmapper", "fast-apple-datapath", "tls-ring"] }
+iroh-blobs  = "0.103"
+# iroh-relay = { version = "1.1", features = ["server"] }   # если свой relay (тема 1)
+
+# PQ (RustCrypto новое поколение: hybrid-array 0.4, signature 3, kem 0.3, rand_core 0.10)
+ml-dsa = { version = "0.1.1", features = ["zeroize"] }            # НЕ "0.1.0-rc.4"
+ml-kem = { version = "0.3.2", features = ["zeroize", "getrandom"] } # фича deterministic удалена
+kem    = "0.3"                                                     # было 0.2
+
+# оставить как есть (не пересекаются типами с ml-dsa/ml-kem):
+x25519-dalek = { version = "2", features = ["static_secrets", "reusable_secrets"] }
+chacha20poly1305 = "0.10"
+argon2 = "0.5"
+rand   = "0.8"        # thread_rng для x25519/padding; ml-kem/ml-dsa RNG не требуют
+blake3 = "1"
+
+# FIPS-бэкенд (optional)
+aws-lc-rs = { version = "1.18", features = [] }   # ML-DSA стабилен, unstable больше не нужен
+# опция PQ-TLS транспорта (фича aira-net "pq-tls"):
+# iroh features += "tls-aws-lc-rs" (и убрать "tls-ring"); rustls = { version = "0.23.33+", default-features = false, features = ["std", "aws-lc-rs", "prefer-post-quantum"] }
+```
+
+Транзитивные ограничения: ml-dsa 0.1.1 → hybrid-array 0.4, signature 3, module-lattice 0.2.3, shake 0.1 (digest ^0.11 stable — конфликтует только с iroh-base 0.97); ml-kem 0.3.2 → kem 0.3, rand_core 0.10, getrandom 0.4 (через kem/getrandom), sha3 0.11; iroh 1.1 → rand 0.10, getrandom 0.4, ed25519-dalek 3, rustls ≥0.23.33, noq 1.2. В графе будут одновременно rand 0.8 + 0.10 и rand_core 0.6 + 0.10 — это допустимо (разные major), не пытаться унифицировать до релиза. MSRV: ml-dsa/ml-kem 1.85, iroh 1.91 → поднять `rust-version` workspace до 1.91 (toolchain 1.94.1 есть). Удалить `RUSTSEC-2025-0144` из deny.toml:45 и из .cargo/audit.toml.
+
+## 2. Порядок миграции (один PR, ветка `milestone/9.6-pq-bump`)
+
+Шаг 0 — snapshot-векторы ДО bump (на тэге v0.3.5): `git worktree add ../aira-v035 v0.3.5`, добавить временный тест в crates/aira-core/src/crypto/rustcrypto.rs, печатающий hex для seed=[7u8;32]: `identity_keygen → encode_verifying_key` (1952 байт), `sign(sk, b"aira-snapshot-v1")` (3309 байт), `kem_keygen → encode_kem_encaps_key` (1184 байт) и `encode_kem_decaps_key` (2400 байт), плюс `MasterSeed::from_phrase(<фиксированная фраза>).derive("aira/identity/0")` → hex. Сохранить в `crates/aira-core/tests/vectors/v0_3_5.json` (это заодно детерминистический тест из .claude/rules/testing.md).
+
+Шаг 1 — iroh 1.1: `crates/aira-net/src/endpoint.rs` — убрать `Endpoint::empty_builder` (3 ошибки), затем `cargo check --workspace --all-targets` и починить daemon/ffi/gui/cli по мере всплытия.
+
+Шаг 2 — `crates/aira-core/src/crypto/rustcrypto.rs` (сигнатуры трейта `CryptoProvider` в crypto/mod.rs:29-111 НЕ меняются):
+
+```rust
+// БЫЛО
+use ml_dsa::{signature::Verifier, KeyGen, MlDsa65, Signature};
+use ml_kem::{kem::{Decapsulate, Encapsulate}, KemCore, MlKem768};
+type KemDecapsKey = <MlKem768 as KemCore>::DecapsulationKey;
+type KemEncapsKey = <MlKem768 as KemCore>::EncapsulationKey;
+let kp = MlDsa65::key_gen_internal(&ml_dsa::B32::from(*seed));
+Ok((kp.signing_key().clone(), kp.verifying_key().clone()))
+Ok(MlKem768::generate_deterministic(&d, &z))
+let (ct, ss) = pk.encapsulate(&mut rand::thread_rng()).map_err(|()| ..)?;
+let ct_arr = ml_kem::Ciphertext::<MlKem768>::try_from(ct)?; sk.decapsulate(&ct_arr)
+use ml_kem::EncodedSizeUser; key.as_bytes().to_vec(); Encoded::<K>::try_from(bytes); K::from_bytes(&encoded)
+
+// СТАЛО
+use ml_dsa::{signature::{Keypair, Verifier}, MlDsa65, Seed as DsaSeed, Signature};
+use ml_kem::{DecapsulationKey768, EncapsulationKey768, Seed as KemSeed};
+use kem::{Decapsulate, Encapsulate, KeyExport, TryKeyInit};
+type SigningKey  = ml_dsa::SigningKey<MlDsa65>;   // без изменений
+type VerifyingKey = ml_dsa::VerifyingKey<MlDsa65>;
+type KemDecapsKey = DecapsulationKey768;
+type KemEncapsKey = EncapsulationKey768;
+
+fn identity_keygen(seed: &[u8;32]) -> Result<(SigningKey, VerifyingKey), CryptoError> {
+    let sk = SigningKey::from_seed(&DsaSeed::from(*seed));   // FIPS 204 Alg.6, как key_gen_internal
+    let vk = sk.verifying_key();                              // signature::Keypair
+    Ok((sk, vk))
+}
+fn sign(key, msg) { key.sign_deterministic(msg, &[]) ... }    // БЕЗ изменений (сохранён в 0.1.1)
+fn verify(key, msg, sig) { Signature::<MlDsa65>::try_from(sig) ... key.verify(msg,&s).is_ok() } // без изменений
+
+fn kem_keygen(seed: &[u8;32]) -> Result<(KemDecapsKey, KemEncapsKey), CryptoError> {
+    let d = blake3::derive_key("aira/kem-keygen-d", seed);   // контексты сохранить (KEY_CONTEXTS.md:21-22)
+    let z = blake3::derive_key("aira/kem-keygen-z", seed);
+    let mut s = KemSeed::default(); s[..32].copy_from_slice(&d); s[32..].copy_from_slice(&z); // d‖z
+    let dk = DecapsulationKey768::from_seed(s);              // внутри split() → generate_deterministic(d,z)
+    let ek = dk.encapsulation_key().clone();                 // kem::Decapsulator
+    Ok((dk, ek))
+}
+fn kem_encaps(pk) -> Result<(Vec<u8>, Zeroizing<[u8;32]>), CryptoError> {
+    let (ct, ss) = pk.encapsulate();                         // фича ml-kem/getrandom, инфаллибельно
+    Ok((ct.to_vec(), Zeroizing::new(ss.into())))
+}
+fn kem_decaps(sk, ct: &[u8]) -> Result<Zeroizing<[u8;32]>, CryptoError> {
+    let ss = sk.decapsulate_slice(ct).map_err(|_| CryptoError::DecapsFailed)?;  // длина ≠1088 → ошибка
+    Ok(Zeroizing::new(ss.into()))
+}
+fn encode_kem_encaps_key(k) -> Vec<u8> { k.to_bytes().to_vec() }              // KeyExport (1184 байт, формат FIPS 203)
+fn decode_kem_encaps_key(b) -> Result<..> { let arr = kem::Key::<KemEncapsKey>::try_from(b).map_err(|_| InvalidKey)?; KemEncapsKey::new(&arr).map_err(|_| InvalidKey) } // TryKeyInit — теперь валидирует EK
+fn encode_kem_decaps_key(k) -> Vec<u8> { k.to_bytes().to_vec() }              // KeyExport → 64-байтный Seed (НОВЫЙ формат)
+fn decode_kem_decaps_key(b) -> Result<..> {
+    match b.len() {
+        64   => Ok(KemDecapsKey::from_seed(KemSeed::try_from(b)?)),
+        2400 => { #[allow(deprecated)] use ml_kem::ExpandedKeyEncoding; KemDecapsKey::from_expanded_bytes(&Array::try_from(b)?).map_err(|_| InvalidKey) } // legacy v0.3.5 снапшоты
+        _    => Err(CryptoError::InvalidKey),
+    }
+}
+```
+Зафиксировать `CryptoError` → `Zeroizing` семантику; `Seed` ml-dsa/ml-kem обернуть в `Zeroizing` перед drop (ml-kem `zeroize`-фича делает это для DK). Обновить docstring/размеры констант (VK 1952, SIG 3309, EK 1184, CT 1088, DK-seed 64) как константы, не magic numbers.
+
+Шаг 3 — `crates/aira-core/src/crypto/awslc.rs`: (a) `use aws_lc_rs::signature::{KeyPair, PqdsaKeyPair, ML_DSA_65, ML_DSA_65_SIGNING}` вместо `unstable::signature` (awslc.rs:12); (b) `kem_keygen` (awslc.rs:124-141): получить expanded DK через `DecapsulationKey768::from_seed(d‖z)` + `#[allow(deprecated)] ExpandedKeyEncoding::to_expanded_bytes()` и загрузить в `aws_kem::DecapsulationKey::new(&ML_KEM_768, ..)`, как сейчас. Убрать фичу `unstable` из workspace aws-lc-rs.
+
+Шаг 4 — `handshake.rs:82,195` (только вывод типов после изменения ассоц. типов) и `ratchet.rs:442-444/488-492` — снапшот через новый `encode_kem_decaps_key` (seed), чтение обоих форматов; добавить тест «десериализация снапшота v0.3.5 с 2400-байтным DK».
+
+Шаг 5 — тесты: (1) snapshot-тест `crates/aira-core/tests/vectors_v0_3_5.rs`: те же seed'ы → ОЖИДАЕТСЯ полное совпадение VK/EK hex и подписи hex с v0.3.5 (детерминированный keygen и детерминированная подпись — оба по FIPS без RNG); при расхождении VK — это релиз-блокер (адреса пользователей меняются), при расхождении только подписи — допустимо, но задокументировать; (2) `cargo test -p aira-core --features compat-test` (8 кросс-бэкенд тестов compat_tests.rs:21-146 — must pass); (3) новый тест: `decode_kem_encaps_key` на EK с коэффициентами ≥ q → `Err(InvalidKey)`; (4) `kem_decaps` на CT длины 1087/1089 → `Err`; (5) proptest sign/verify roundtrip; (6) fuzz-таргет для `decode_verifying_key`/`decode_kem_encaps_key`.
+
+Шаг 6 — `cargo fmt && cargo clippy --workspace --all-targets -D warnings && cargo test --workspace && cargo audit && cargo deny check`; ожидать исчезновение quinn-proto/hickory-proto/ml-dsa advisories. Версия workspace → 0.4.0 (breaking формат DK-снапшота, iroh 1.x), commit `feat(core): migrate to ml-dsa 0.1.1 / ml-kem 0.3.2 and iroh 1.1`. Обновить docs/KEY_CONTEXTS.md (контексты kem-keygen-d/z остаются), spec/12-dependencies.md, spec/18-milestones.md (9.6 Phase A выполнен).
+
+Шаг 7 (опционально, после релиза) — фича `pq-tls` в aira-net: `tls-aws-lc-rs` + `rustls/prefer-post-quantum`, `cfg(not(target_arch = "wasm32"))`; интеграционный тест two_nodes с проверкой negotiated kx group = X25519MLKEM768 (через `Connection::handshake_data` / rustls `negotiated_key_exchange_group`).
+
+## Риски
+
+- Если VK-байты для одного seed после bump НЕ совпадут с v0.3.5 (например, из-за скрытого различия в кодировке 0.0.4 — проверить невозможно без snapshot-теста), адреса всех пользователей v0.3.5 изменятся → контакты/сессии сломаются. Митигация: шаг 0 (векторы с тэга v0.3.5) до любого изменения кода; при расхождении — переходный код «legacy address» или явный reset с уведомлением.
+- Ratchet-снапшоты v0.3.5 содержат expanded DK (2400 байт); чтение через deprecated `from_expanded_bytes` может быть удалено в ml-kem 0.4 — заложить миграцию снапшота на seed-формат при первом чтении.
+- В графе появятся rand 0.8 + rand 0.10, rand_core 0.6 + 0.10, getrandom 0.2/0.3/0.4 одновременно — увеличение бинаря и путаница при будущих bump'ах; в wasm-сборке getrandom 0.4 требует cfg `getrandom_backend="wasm_js"`, иначе сборка ядра для M14 не соберётся.
+- PQ-TLS iroh (aws-lc-rs) добавляет C/asm-сборку (cmake, nasm на Windows, NDK для Android) в CI/cross-compile (MSI/DMG/AppImage/APK) и несовместим с wasm; одновременное включение `tls-ring` и `tls-aws-lc-rs` может привести к panic rustls «multiple crypto providers» без явного `install_default`.
+- aws-lc-rs 1.18 переводит `fips` на несертифицированный (в процессе) модуль 4.0; заявлять «FIPS 140-3 validated» для ML-DSA в Aira нельзя до появления сертификата; на 1.17.x ML-DSA только `unstable` (ветка 3.x модуля без ML-DSA).
+- Гибридный комбайнер Aira опирается на заброшенный draft-ounsworth (2024-08); X-Wing/ecdhe-mlkem не RFC на 09.2026 — любая смена комбайнера позже потребует версионирования wire-формата (CapabilitySet) и переговоров с v0.4-клиентами.
+- Расхождение спеки и кода в PQ-ratchet (спека §4.4: шаг при смене направления; код ratchet.rs:369-371: только счётчик ≥50) — пробел в PQ-PCS до 50 сообщений в одном направлении и уязвимость к выборочному дропу «толстых» сообщений с pq_kem_ct (сценарий, описанный Signal).
+- Класс side-channel багов в PQ-реализациях в 2026 году активен (RustCrypto ×2, libcrux ×2, libgcrypt, wolfSSL ×2 за полгода) — вероятны новые advisories для ml-dsa/ml-kem; нужен `cargo audit` в CI как блокирующий job (сейчас CI Security Audit падает и игнорируется) и быстрый цикл patch-релизов.
+- ml-dsa 0.1.1 использует `sign_deterministic` (rnd = 0) — детерминированные подписи ML-DSA более уязвимы к fault-атакам, чем hedged (FIPS 204 рекомендует hedged по умолчанию); для настольных/мобильных клиентов риск низкий, но при желании перейти на `sign_randomized` snapshot-тест подписи станет невозможным (только verify).
+
+## Открытые вопросы
+
+- Совпадут ли байты VK/EK/подписи между ml-dsa 0.0.4/ml-kem 0.2.3 и 0.1.1/0.3.2 на одном seed — требуется фактический прогон snapshot-теста (шаг 0) на тэге v0.3.5 и после миграции; статически из CHANGELOG это не доказуемо.
+- Какие ошибки компиляции всплывут в aira-daemon/aira-ffi/aira-gui/aira-cli после iroh 1.1 (эксперимент D остановился на aira-net) — объём миграции iroh может превысить оценку 1–3 дня.
+- Нужен ли для релиза PQ-TLS на транспорте (aws-lc-rs) или достаточно PQ на уровне протокола Aira (PQXDH + ratchet) с классическим X25519 в QUIC — решение владельца с учётом стоимости нативной сборки в CI и wasm-несовместимости.
+- Хранят ли v0.3.5-базы реальных пользователей ratchet-снапшоты с expanded DK (2400 байт), т.е. нужен ли путь чтения legacy-формата, или релиз допускает сброс сессий (SessionReset §4.9).
+- Переводить ли PQ-ratchet на direction-change trigger (как обещает спека §4.4) до релиза, или править спеку под текущее поведение (интервал 50).
+- Точная семантика `Verifier::verify` в ml-dsa 0.1.1 (ctx = пустой?) — проверить в verifying.rs:194-198 при миграции, чтобы подписи с `sign_deterministic(msg, &[])` верифицировались тем же путём.
+- Статус сертификации AWS-LC-FIPS 4.0 (NIST Modules In Process) на момент релиза — влияет на формулировки о FIPS в README/маркетинге.
+- Есть ли у Signal опубликованный текст спецификации SPQR/ML-KEM Braid на signal.org/docs (URL /docs/specifications/spqr/ возвращает 404; блог ссылается на «online protocol documentation») — нужен для точного сравнения параметров (частота, размер чанка 42 байта, erasure-параметры) при проектировании v0.5.

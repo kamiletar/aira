@@ -392,3 +392,385 @@ egui-клиент не удаляется, а переходит в класс �
 
 ---
 
+
+## 16.1 Релизный путь (пересмотр сентября 2026)
+
+**Контекст.** Аудит 2026-09-07 (`.claude/docs/release-audit-2026-09.md`, HEAD `971e038`, v0.3.5) показал:
+
+- **Блокер №0:** `aira-daemon` не поднимает iroh Endpoint/Router и не использует handshake/ratchet/relay.
+  `SendMessage` пишет в redb и отвечает `Ok`; `pending::dequeue` не вызывается нигде. Сообщения
+  никогда не покидают локальную базу — ни онлайн, ни офлайн. Всё, что описано в M2–M4 как
+  «сетевое», существует только как библиотечный код в `aira-net` и его тесты.
+- **Блокер №1:** n0 отключает публичные relay для клиентов iroh 0.9x **30 сентября 2026**.
+  Клиенты за NAT на v0.3.5 после этой даты не соединятся. Миграция на iroh 1.1 одновременно
+  разблокирует `ml-dsa 0.1.1` (iroh-base 0.97 пинит `digest = "=0.11.0-rc.10"`) и снимает
+  advisories quinn-proto / hickory-proto.
+- Протокольный слой `aira-core` (ratchet, handshake) не готов к «релизу с обещанием
+  совместимости» (§2.5 аудита, находки C1–C7): wire не несёт заголовок ratchet, AEAD без AAD,
+  PQ-шаг ratchet никогда не стартует, handshake не PQXDH, подписи без SIGMA-binding.
+- Клиенты: `keyring` без platform-features (mock store → seed не переживает перезапуск GUI),
+  релизный APK не подписан вообще, Android-оболочка без provisioning seed.
+
+**Порядок.** Milestone 9.6 и 14–17 переносятся *после* релизного пути. Версии:
+`0.4.x` — M18–M22 (bridge-релизы без обещания совместимости), `0.5.0-beta.N` — M23,
+`1.0` — после внешнего аудита. Релизный протокол = **v2** (`min_version = max_version = 2`);
+v1 объявляется pre-release без гарантий (у v0.3.x сети нет — ломать нечего).
+
+```
+M18 (iroh 1.1 + PQ) -> M19a (протокол v2) -> M19 (демон в сети) -> M21 (aira-relay) -> M22 -> M23 -> бета
+                                                 | параллельно с M19:
+                                                 |-- M19b (клиентские блокеры, Android)
+                                                 |-- M20 (свой iroh-relay + discovery)
+```
+
+Решения, которые нужны от владельца до старта (каждое — одна строка в PR-описании M18):
+
+1. Mailbox v2: две коробки на пару по направлению (рекомендуется) или одна (§6.5 сейчас).
+2. Протокол v2 без совместимости с 0.3.x — да (рекомендуется).
+3. DHT (§5.2b, §11B.4) уходит после релиза; discovery = pkarr через свой `iroh-dns-server` — да.
+4. `Platform::Mobile` в `seed.rs` удалить (разные соли → разные identity из одной фразы) — да.
+5. Порты mail-сервера: кто держит 80/443 (nginx?), открыт ли udp/7842 → вариант A или B в M20.
+6. Android в первой бете: доводить (M19b Android-пакет) или пометить preview и убрать из assets.
+7. Android developer verification ($25 + government ID; блокировка sideload с 30.09.2026 в
+   BR/ID/SG/TH, глобально 2027) — регистрироваться или принять ограничение.
+8. Бюджет подписи: Apple Developer $99/год (notarization); Windows — заявка в SignPath
+   Foundation (бесплатно для OSS) или Certum OSS (~$50).
+
+### Milestone 18 — Миграция iroh 1.1 + ml-dsa 0.1.1 / ml-kem 0.3.2 (v0.4.0, 3–5 дней, дедлайн 30.09.2026)
+
+**Зачем:** без этого клиенты за NAT перестанут работать 30.09.2026, а `ml-dsa 0.0.4` несёт три
+известных дефекта (RUSTSEC-2025-0144 / CVE-2026-22705 timing при подписи; CVE-2026-24850
+нестрогая проверка hint'ов; GHSA-h37v-hp6w-2pp8 — валидная подпись может не пройти верификацию).
+Все закрыты в `ml-dsa 0.1.1`. Один PR, ветка `milestone/18-iroh-pq`.
+
+⚠️ Незакоммиченный bump `ml-dsa = "0.1.0-rc.4"` в `Cargo.toml` не собирается (sha3 rc.6 vs keccak)
+и не нужен — откатить, целевые версии ниже. `ml-dsa 0.1.1` не резолвится при iroh 0.97, поэтому
+Phase A из M9.6 отдельно невозможна.
+
+1. **Шаг 0 — снапшот-векторы с тега v0.3.5 (до любых правок).** `git worktree add ../aira-v035
+   v0.3.5`; временный тест печатает hex для `seed = [7u8; 32]`: `identity_keygen →
+   encode_verifying_key` (1952 байт), `sign(sk, b"aira-snapshot-v1")` (3309), `kem_keygen →
+   encode_kem_encaps_key` (1184) и `encode_kem_decaps_key` (2400), плюс
+   `MasterSeed::from_phrase(<фиксированная фраза>).derive("aira/identity/0")`. Сохранить в
+   `crates/aira-core/tests/vectors/v0_3_5.json`. Расхождение VK после миграции = **релиз-блокер**
+   (адрес пользователя = байты VK).
+2. **Cargo.toml (workspace):** `iroh = { version = "1.1", default-features = false, features =
+   ["metrics", "portmapper", "fast-apple-datapath", "tls-ring"] }`, `iroh-blobs = "0.103"`,
+   `ml-dsa = { version = "0.1.1", features = ["zeroize"] }`, `ml-kem = { version = "0.3.2",
+   features = ["zeroize", "getrandom"] }` (фича `deterministic` удалена), `kem = "0.3"`,
+   `aws-lc-rs = "1.18"` без `unstable`, `rust-version = "1.91"`. x25519-dalek 2 /
+   chacha20poly1305 0.10 / argon2 0.5 / rand 0.8 **не трогать** (типами не пересекаются; rand 0.8 и
+   0.10 в графе одновременно — допустимо).
+3. `crates/aira-net/src/endpoint.rs:78` — `Endpoint::empty_builder()` удалён в 1.x →
+   `Endpoint::builder(presets::Minimal)` в тестах; `presets::N0` в проде остаётся до M20.
+   Далее `cargo check --workspace --all-targets` и починка daemon/ffi/gui/cli по мере всплытия
+   (эксперимент остановился на aira-net, объём выше неизвестен).
+4. `crates/aira-core/src/crypto/rustcrypto.rs` (сигнатуры трейта `CryptoProvider` в
+   `crypto/mod.rs:29-111` не меняются): `identity_keygen` → `SigningKey::<MlDsa65>::from_seed` +
+   `signature::Keypair::verifying_key`; `sign` через `sign_deterministic(msg, &[])` (сохранён);
+   `kem_keygen` → `DecapsulationKey768::from_seed(d ‖ z)` (контексты `aira/kem-keygen-d/-z`
+   остаются) + `dk.encapsulation_key()`; `kem_encaps` → `pk.encapsulate()` без RNG; `kem_decaps`
+   → `decapsulate_slice` (длина ≠ 1088 → ошибка); `decode_kem_encaps_key` → `TryKeyInit::new`
+   (теперь валидирует EK по FIPS 203 §7.2); `encode_kem_decaps_key` → 64-байтный `Seed`;
+   `decode_kem_decaps_key` — по длине: 64 → `from_seed`, 2400 → deprecated
+   `ExpandedKeyEncoding::from_expanded_bytes` (legacy-снапшоты v0.3.5). Размеры — константы.
+5. `crates/aira-core/src/crypto/awslc.rs:12` → `aws_lc_rs::signature::{PqdsaKeyPair, ML_DSA_65,
+   ML_DSA_65_SIGNING}`; `:124-141` expanded DK через `from_seed` + `to_expanded_bytes`.
+   ⚠️ aws-lc-rs 1.18 переводит `fips` на модуль AWS-LC-FIPS 4.0, который **ещё не сертифицирован**
+   — не заявлять «FIPS-validated ML-DSA».
+6. `handshake.rs:82,195` (вывод типов), `ratchet.rs:442-444/488-492` — снапшот через новый
+   `encode_kem_decaps_key`, чтение обоих форматов; тест «снапшот v0.3.5 с 2400-байтным DK читается».
+7. Тесты: (а) snapshot-совпадение VK/EK/подписи с `v0_3_5.json`; (б) `cargo test -p aira-core
+   --features compat-test` (8 кросс-бэкендных); (в) EK с коэффициентами ≥ q → `Err(InvalidKey)`;
+   (г) CT длины 1087/1089 → `Err`; (д) proptest sign/verify roundtrip; (е) fuzz-таргеты
+   `decode_verifying_key` / `decode_kem_encaps_key`.
+8. Удалить `RUSTSEC-2025-0144` из `deny.toml:45` и `.cargo/audit.toml:12`. `cargo audit` должен
+   потерять quinn-proto / hickory-proto / ml-dsa. CI: посмотреть лог упавшего job Clippy от
+   2026-07-30 (локально exit 0 на rustc 1.94.1), починить под актуальный stable.
+9. Документы: `spec/12-dependencies.md` (iroh 1.1, iroh-blobs 0.103, ml-dsa 0.1.1, ml-kem 0.3,
+   getrandom 0.4, rust-version 1.91), `CLAUDE.md`, `spec/03-network.md:21-22`,
+   `spec/01-overview.md:103`; `habr_article.md` блок Cargo.toml. Тег `v0.4.0` — bridge-релиз,
+   только зависимости, без сети (release notes честно).
+
+Не цели: PQ-TLS на транспорте (`iroh/tls-aws-lc-rs` + `rustls/prefer-post-quantum`) — отдельная
+фича `pq-tls` в aira-net после релиза (нативная сборка aws-lc, несовместимо с wasm).
+
+### Milestone 19a — Протокол v2 в aira-core (v0.4.x, ~2 недели)
+
+**Зачем:** wiring демона к сети (M19) поверх текущего wire-формата означал бы ломать формат
+дважды. Находки C1–C7 аудита закрываются здесь, до сетевого кода.
+
+1. **Wire-формат (C1).** `proto.rs`: `Message::Ratchet { header: MessageHeader, envelope:
+   EncryptedEnvelope }` — `dh_public`, `prev_chain_len`, `pq_kem_ct`, `pq_kem_ek` из `ratchet.rs:40-52`
+   идут в заголовке; `header` целиком — AAD для AEAD. Версия формата в `Capabilities` (§6.4):
+   `min_version = max_version = 2`. Описать в `spec/04-protocol-wire.md` §6.1.
+2. **Транзакционный decrypt (C2).** `ratchet.rs:297-323`: все skip/DH/PQ-шаги на клоне
+   состояния, коммит только после успешного `aead_decrypt`. Тест «битый header / битый ciphertext
+   не меняет состояние сессии».
+3. **Рабочий PQ-шаг (C3, C4).** `RatchetSession::new` получает ML-KEM ek пира из handshake;
+   `pq_kem_ct` обрабатывается независимо от `need_dh_ratchet`; ML-KEM keypair ratchet — из OS RNG
+   (`root_key` только для KDF-миксинга, контексты `aira/ratchet/pq-init` / `pq-rekey` пересмотреть
+   в `docs/KEY_CONTEXTS.md`). Спека §4.4 обещает шаг «при смене направления» — реализовать
+   direction-change trigger в дополнение к `PQ_RATCHET_INTERVAL = 50`. Тесты: 100+ сообщений с
+   `pq_enabled = true` в обе стороны, снапшот после PQ-шага, out-of-order через PQ-шаг.
+4. **Handshake = PQXDH-подобный (C5, C6).** Ephemeral ML-KEM keypair на каждый handshake;
+   `identity_pk` обеих сторон и все публичные значения в `derive_session_keys`; SIGMA-binding —
+   подпись ack над `init ‖ ack`; nonce инициатора + timestamp против replay. Для асинхронного старта
+   через relay (M21) — подписанный PQ prekey bundle (`SignedPrekeyBundle { x25519, mlkem_ek,
+   sig, expires }`). Тесты: replay, identity misbinding, downgrade (клиент с `pq=false`).
+   §4.5.1 (chunked handshake ≤ 1200 B) переписать под QUIC-стримы + relay fallback (C12).
+5. **`spam.rs` (C7):** `min_difficulty` задаёт верификатор; PoW над
+   `recipient_pubkey ‖ server_nonce ‖ issued_at ‖ request` (сейчас — replay/precomputation); проверка
+   ML-DSA подписи `ContactRequest`; `RateLimiter` на bounded LRU. `Message::ContactRequest` в
+   `proto.rs` (подключение в демон — M22). Criterion-бенч BLAKE3-PoW → таблица §11B.2 пересчитана
+   (ожидание: 16 бит ≈ 10 мс, 20 ≈ 0,2 с, 24 ≈ 3 с, 28 ≈ 50 с однопоточно).
+6. **Мелкое:** binding identity ↔ iroh `EndpointId` при handshake (C8, хранится в `contacts`);
+   `derive_device_id(seed, index)` + контекст в KEY_CONTEXTS (C9); fingerprint ≥ 128 бит для
+   `/verify`, 8-байтный — только подсказка в invitation link (C10); combiner-контекст и порядок
+   байт counter — спеку привести к коду (C12); `verify_link_code` через `ConstantTimeEq` + лимит
+   попыток, явный zeroize `pq_mlkem_dk`/`send_dh_secret` в `Drop` (C14).
+7. **Тесты и fuzz (C11):** fuzz-таргеты на `Message` (включая `HandshakeInit` с лимитами длин),
+   `GroupControl`, `RatchetSnapshot`, `read_framed`; proptest roundtrip padding / ratchet;
+   `cargo fuzz` в CI по 60 с на таргет.
+8. Спека: §4.2/§4.4/§4.5 (`spec/02-crypto.md`) приведены к коду; `docs/KEY_CONTEXTS.md` дополнен;
+   `spec/05-protocol-versioning.md` §6.4 — «релизный протокол v2».
+
+### Milestone 19 — Сетевой слой в демоне (v0.4.x, 2–3 недели, блокер №0)
+
+**Зачем:** после этого милстоуна мессенджер впервые доставляет сообщения. Карта точек подключения
+с файлами и строками — аудит §4.1a.
+
+**Phase A — Storage-предпосылки (до сетевого кода)**
+
+1. `aira-storage`: таблица `meta { schema_version: u32 }`, цепочка миграций при `Storage::open`;
+   v1 → v2: `ContactInfo` получает `endpoint_addr: Vec<u8>` (iroh `EndpointAddr`, postcard) и
+   `relays: Vec<RelayRef>`; индекс `pseudonym → contact` для входящих по псевдониму.
+2. `pending.rs`: инвариант «в PENDING только `postcard(EncryptedEnvelope)`» — тип-обёртка
+   `PendingEnvelope` вместо `&[u8]`; заголовок `{ enqueued_at, size }`; лимиты 1000 сообщений /
+   100 MB на контакт → `DaemonResponse::Error(QueueFull)`; per-contact `seq` без полного скана; GC
+   7 дней. ⚠️ Сейчас fan-out групп кладёт plaintext и sender keys в нешифруемую таблицу
+   (`handler.rs:305, 464, 901`) — до фикса шифровать PENDING storage-ключом.
+3. `dedup.rs`: ключ `BLAKE3(sender_pubkey ‖ counter ‖ nonce)[..16]` — вызывать до ratchet-decrypt.
+4. `backup.rs` VERSION = 2: groups, group_messages, devices, pseudonyms + `pseudonym_counter`
+   (сейчас после restore counter = 0 → повтор псевдонимов, нарушение §12.6).
+5. `encrypted.rs`: AAD = `table_name ‖ row_key` (ciphertext нельзя переставить между строками).
+6. Новый KDF-контекст для iroh `SecretKey` в `docs/KEY_CONTEXTS.md`. Решение: детерминированно из
+   seed (стабильный `EndpointId`, простая доставка) — по умолчанию; per-device случайный ключ в
+   settings — опция позже (§12.6).
+
+**Phase B — `net_task`**
+
+7. `aira-daemon/src/main.rs:100-160` после `Storage::open`: `AiraEndpoint::bind(Some(secret_key))`
+   (`endpoint.rs:45`) → `protocol::build_router(&ep, ChatHandler, HandshakeHandler,
+   Arc<RelayServer>, Some(&blob_store))` (`protocol.rs:178-195`) → `Receiver<IncomingMessage>`,
+   `Receiver<IncomingHandshake>`. Endpoint — через `AiraPreset` из M20, до него `presets::N0`.
+8. Новый `aira-daemon/src/net_task.rs`: `SessionManager { HashMap<pubkey, RatchetSession> }`;
+   при старте `sessions::list_contacts → load → RatchetSession::from_snapshot`; после **каждого**
+   send/recv `to_snapshot → sessions::save` **до** отправки в сеть (crash между send и save =
+   повтор chain key).
+9. `handler.rs:29-36` `handle_request` становится `async` (или получает
+   `mpsc::Sender<NetCommand>`); тяжёлое — `spawn_blocking` (`std::fs::read` файла до 4 GiB в
+   `handler.rs:895` → потоковый BLAKE3). `SendMessage` → ratchet-encrypt → `pending::enqueue` →
+   `NetCommand::Deliver { contact }`; то же для `enqueue_group_control` (300-320),
+   `handle_send_group_message` (441-477), `handle_send_file` (863-949).
+10. Таск `pending_drain`: `pending::peek` → `ep.connect(addr, alpn::CHAT)` (таймаут 5 с) →
+    `connection::write_framed` → ack → `pending::dequeue`; триггеры: старт, входящее соединение,
+    backoff [5 с, 30 с, 2 мин, 10 мин, 1 ч]. Fallback при недоставке — `RelayClient::deposit`
+    (до M21 — существующий `aira/1/relay`, после — v2).
+11. Входящие: `IncomingMessage` → `is_duplicate` → ratchet decrypt → существующий
+    `handle_incoming_payload` (`handler.rs:621-674`) → `DaemonEvent::MessageReceived`.
+    `ContactOnline/Offline` — из `ConnectionManager::set_connected/set_disconnected`
+    (`connection.rs:155-172`); новые события `DeliveryState { id, Sent | Queued | Relayed |
+    Delivered }`, `NetStatus`. Форвардер событий (`ipc.rs:129, 224`) обрабатывает
+    `RecvError::Lagged` вместо выхода; ёмкость канала 4096.
+12. Контакты: `DaemonRequest::GetInvitation` → `aira://add/<base64url(postcard(InvitationLink))>`
+    (`discovery.rs:20-45`) со **стабильным** pseudonym (выданные хранить; `GetMyAddress` сейчас
+    генерирует новый при каждом вызове — `handler.rs:77-95`) + `EndpointAddr`;
+    `AddContact { uri }` парсит ссылку; `ContactRequestReceived` + `AcceptContact/RejectContact`.
+    `SetRelays / GetRelays / GetNetStatus` в IPC (`spec/10-daemon-ipc.md`).
+13. Файлы: `FileComplete` только по `FileAck` от пира (`proto.rs:17`); ALPN FILE в router;
+    BlobStore — `iroh_blobs::store::fs` на диск.
+14. `aira-ffi/src/runtime.rs:95-125` — тот же `net_task` из общей библиотеки `aira-daemon` (lib);
+    Android получает сеть автоматически.
+
+**Phase C — Тесты**
+
+15. `crates/aira-daemon/tests/two_daemons.rs`: два демона in-process с реальным IPC-сокетом →
+    `AddContact` по invitation link → `SendMessage` → у второго `MessageReceived`; перезапуск
+    первого → сессия жива (снапшот); Bob офлайн → сообщение в PENDING → Bob онлайн → доставлено,
+    `DeliveryState::Delivered`; дубликат по сети не попадает в историю.
+16. Группа из трёх демонов: create → сообщение → все получили (закрывает M6 п.6).
+
+### Milestone 19b — Клиентские блокеры беты (параллельно с M19, ~1 неделя + Android-пакет)
+
+**Desktop (GUI/CLI/демон)**
+
+1. `Cargo.toml:93`: `keyring = { version = "3", features = ["windows-native", "apple-native",
+   "sync-secret-service"] }` (или `linux-native` + vendored для AppImage без libdbus) — сейчас
+   компилируется **mock in-memory store**, seed не переживает перезапуск GUI. Снять `#[ignore]` с
+   roundtrip-тестов `keychain.rs:189,209,221` хотя бы на Windows/macOS в CI. Ручная проверка:
+   создать identity → закрыть → запустить → нет welcome.
+2. Seed в демон не через `AIRA_SEED` env (`main.rs:85-96`; история shell, `/proc/<pid>/environ`),
+   а через stdin при spawn / IPC-handshake / keychain (вынести `aira-gui/keychain.rs` в общий
+   модуль). `AIRA_SEED` — только `cfg(debug_assertions)`. CLI: `aira init` / `aira start`.
+   GUI: убрать «Copy seed to clipboard» или очищать буфер через 30 с (`welcome.rs:156-157`).
+3. IPC-аутентификация: Unix — `chmod 0700 ~/.aira`, `0600` сокет, проверка `SO_PEERCRED` uid;
+   Windows — имя пайпа с SID пользователя, `first_pipe_instance(true)`, security descriptor «только
+   текущий пользователь»; токен `<data_dir>/ipc.token` (0600) в первом кадре. Сейчас любой локальный
+   процесс может `Shutdown` и `ExportBackup{path}` с расшифрованными ratchet-снапшотами.
+4. Контакты в UI: экран «Share my link» с QR (`qrcode` + egui Image), «Add contact» по ссылке
+   (вставка/сканер из буфера), входящие contact requests с Accept/Reject; CLI `/invite`, `/add
+   <uri>`, `/requests`. Валидация длины pubkey (`add_contact.rs:60`, `handler.rs:38-43`) и
+   `MAX_ENVELOPE_SIZE` для текста (`handler.rs:64`) — константы в `aira-core`.
+5. Settings → «Network»: список relay, статус (`GetNetStatus`), индикатор в status bar; CLI `/relay`.
+6. `README.md` в корне (ссылка на INSTALL.md, статус беты), `docs/INSTALL.md` поправить
+   (Android-раздел неверен: APK не подписан вообще, а не «debug-подписью»).
+
+**Android (решение владельца: доводить или preview)**
+
+7. FFI: `generate_seed_phrase() -> String`, `validate_seed_phrase(&str) -> bool`;
+   `seed_phrase` через `Zeroizing` (сейчас 0 вхождений zeroize в aira-ffi).
+8. Kotlin: `OnboardingScreen` (create/import) → `EncryptedSharedPreferences` / Keystore-wrapped
+   blob (сейчас никто не пишет `seed_phrase`, сервис молча `return`, `repository = null`);
+   `IdentityScreen` с QR; `AddContactScreen` — сканер (ML Kit / ZXing).
+9. `mobile/android/app/proguard-rules.pro` (файла нет при `isMinifyEnabled = true`): `-keep class
+   com.sun.jna.** { *; }`, `-keep class * implements com.sun.jna.** { *; }`, `-keep class
+   uniffi.aira_ffi.** { *; }`.
+10. M9.6 Phase B как есть (signingConfigs из env, GitHub Secrets, `apksigner verify` в CI,
+    `docs/ANDROID_SIGNING.md`) — сейчас `release.yml:229-235` публикует `app-release-unsigned.apk`.
+11. `targetSdk 36` (Play с 31.08.2026), NDK **r28** (16 KB page size по умолчанию; сейчас 26.1),
+    `cargo-ndk` запинить; FGS `specialUse` с `PROPERTY_SPECIAL_USE_FGS_SUBTYPE` вместо `dataSync`
+    (6 ч/сутки на Android 15+), а после M21 — FGS только на время retrieve; убрать
+    `firebase-messaging` (F-Droid запрещает FCM), оставить UnifiedPush; `values-ru`.
+
+### Milestone 20 — Собственный iroh-relay и discovery на mail-сервере (1 неделя, параллельно с M19)
+
+**Зачем:** публичные relay n0 «для development и hobby», без SLA, видят метаданные (IP, время,
+объёмы) и отключают клиентов 0.9x 30.09.2026. iroh-relay **stateless**: хранит соединения, не
+данные; трафик E2E-зашифрован. Это первый из двух процессов на mail-сервере (второй —
+`aira-relay`, M21). Полный план с конфигами — `.claude/docs/audit-2026-09/relay-deploy-plan.md`.
+
+1. DNS `relay.<domain>` → mail-сервер; firewall: tcp/443 (есть) + **udp/7842** (QAD — замена STUN;
+   3478 не нужен); 9090 (metrics) только localhost.
+2. `iroh-relay` v1.1.0 (≥ 1.0.2 обязательно: до неё короткий кадр ронял сервер), сборка из тега
+   `cargo build --profile optimized-release -p iroh-relay --features server` или docker
+   `n0computer/iroh-relay:v1.1.0` по digest; пользователь `iroh-relay`, `/etc/iroh-relay/config.toml`,
+   `/var/lib/iroh-relay/certs`, systemd unit (`Restart=always`, `LimitNOFILE=131072`,
+   `ProtectSystem=strict`).
+3. **Вариант A (рекомендуется):** nginx `stream { ssl_preread }` — SNI `relay.<domain>` →
+   `127.0.0.1:8443` насквозь; relay сам получает Let's Encrypt (TLS-ALPN-01, `cert_mode =
+   "LetsEncrypt"`); быстрый exporter-handshake работает. Прежние HTTPS-vhost'ы webmail переезжают
+   на `127.0.0.1:8444` (+ `proxy_protocol`). **Вариант B:** TLS терминирует nginx (`proxy_pass`,
+   `Upgrade`, проброс `Sec-WebSocket-Protocol`, таймауты 1 ч), relay `cert_mode = "Manual"` на
+   certbot-сертификате; клиенты идут по challenge-fallback (+1 RTT) — тот же путь, что в браузере.
+4. `[limits] accept_conn_limit = 50.0, accept_conn_burst = 200, client.rx bytes_per_second =
+   2_000_000`; `access = "everyone"` на старте (позже `access.http.url` → сервис Aira с
+   PoW-гейтом, M22). Проверка `curl --fail https://relay.<domain>/healthz`.
+5. `iroh-dns-server` 1.1 для pkarr на `dns.<domain>` (`[https] port = 8445`, `[mainline] enabled =
+   false`, `pkarr_put_rate_limit = "smart"`); порт 53 и NS-делегирование — позже.
+6. Клиент: `crates/aira-net/src/preset.rs` — `AiraPreset` (по образцу `presets::N0`:
+   `relay_mode(RelayMode::Custom(RelayMap))`, `PkarrPublisher::builder(url)` /
+   `PkarrResolver::builder(url)` на своём домене, `DnsAddressLookup` вне wasm); конфиг демона
+   `[network] relays = [...], pkarr_relay = "..."`, **n0-fallback выключен по умолчанию**;
+   `AddrFilter` — решение владельца (публиковать прямые IP или только relay).
+7. Второй relay на VPS до релиза (без него одна точка отказа); Prometheus локально; обновлять
+   relay в течение суток после релиза iroh.
+8. Спека: `spec/03-network.md` §5.1 «DERP» → iroh-relay (WebSocket/TLS + QAD), новый §5.1.1
+   «Собственный iroh-relay + iroh-dns-server», §5.2b/§5.3 (DHT, bootstrap-ноды) → pkarr/DNS,
+   DHT — после релиза; глоссарий §20: «transport relay» vs «mailbox relay».
+
+### Milestone 21 — `aira-relay`: offline-доставка v2 (2–3 недели)
+
+**Зачем:** spec §6.3b/§6.5/§11B.5 обещают store-and-forward, а в коде — in-memory `RelayServer`
+без аутентификации (Retrieve/Delete любому, кто знает `mailbox_id`), без квот отправителя, одна
+коробка на пару, и демон его не использует. Дизайн — аудит §4.3; формула mailbox ID в трёх
+источниках расходится (§6.5 спеки, `relay.rs:28`, `habr_article.md:367`) — фиксируется здесь.
+
+1. Крейт `crates/aira-relay` + бинарник `aira-relay`: обычный iroh-endpoint (`AiraPreset`), ALPN
+   `aira/2/relay`, redb (`mailboxes`, `envelopes(mailbox_id, seq)`, `stats`), конфиг TOML,
+   systemd unit рядом с iroh-relay. Старый ALPN `aira/1/relay` и `aira-net/src/relay.rs` удалить.
+2. **Две коробки на пару по направлению:** `mailbox_id[dir] = derive_key("aira/relay/mailbox/v2/"
+   ‖ dir, shared_secret)`; `owner_key[dir]`, `sender_key[dir]` — Ed25519 из shared secret
+   (`aira/relay/owner/v2/dir`, `aira/relay/sender/v2/dir`, в `docs/KEY_CONTEXTS.md`); relay видит
+   только публичные.
+3. Протокол: `RelayHello { protocol_version: 2, supported, capabilities }` + `relay_nonce`;
+   `Register { mailbox_id, owner_pk, sender_pk, notification_endpoint, ttl_hint }` (подпись owner);
+   `Deposit { mailbox_id, envelope }` (подпись sender + nonce; незарегистрированная коробка →
+   `MailboxNotFound`); `Retrieve { after_seq }` / `Ack { up_to_seq }` / `Delete` (подпись owner +
+   nonce); `seq` присваивает relay. `RelayMigration` (§11B.5.1) подписанная.
+4. **Intro-mailbox** по `pseudonym_pubkey` получателя (`aira/relay/intro/v2`): только
+   `ContactRequest` с PoW ≥ 20 бит над `relay_nonce ‖ request` + rate limit по EndpointId —
+   единственное место PoW на relay.
+5. Квоты (§11B.5, переписать под v2): 100 конвертов / 10 MB на коробку, конверт ≤ 64 KB, TTL 7
+   дней **на конверт**, общий cap 1 GB, GC каждый час с приоритетом вытеснения коробок без
+   retrieve, `Register` ≤ 20/сутки на EndpointId.
+6. Push: `NotificationEndpoint::UnifiedPush { url }` — пустой wake-up без содержимого и без
+   mailbox_id; клиент делает retrieve по всем своим коробкам. FCM — нет.
+7. Демон: `relay_poll` (старт, каждые N мин, по push/onResume) → decrypt (skipped keys) → dedup →
+   store → ack; `deposit` при недоставке напрямую во все relay контакта; `MailboxConfig.relays` в
+   контакт-записи (из invitation link). Android: FGS только на время retrieve.
+8. Тесты: «Bob офлайн 3 дня → Alice шлёт 3 сообщения → Bob вернулся → порядок и dedup»; «relay
+   перезапущен — конверты на месте»; «чужой EndpointId не может retrieve»; «deposit без
+   регистрации отклонён»; quota/TTL/GC; proptest кодека, fuzz парсера `RelayRequest`.
+9. Спека: §6.3b, §6.5 (формула v2), §11B.5, §11B.5.1 переписаны; `habr_article.md` раздел
+   «Pairwise Relay Mailboxes» — под v2 и статус.
+
+### Milestone 22 — Anti-abuse (1 неделя)
+
+**Вердикт по «ресурсоёмкому PoW при создании первого ключа»:** не вводить как основную меру
+(аудит §5.3): цена ключа амортизируется (одна identity = бесконечный спам), DDoS relay идёт с
+бесплатных Ed25519 EndpointId и от identity не зависит, grinding ломает детерминизм seed → identity
+(или заставляет ждать минуты при каждом восстановлении), GPU-асимметрия 50–1000×. Вместо —
+**цена каждого действия** + contact-first (§13.1).
+
+1. `Message::ContactRequest` (из M19a) в демоне: приём напрямую и через intro-mailbox; PoW
+   адаптивный 16 → 28 бит (верификатор задаёт по нагрузке, nonce живёт 30 с), `RateLimiter`
+   (10/мин, 3/ч на ключ, бан 1 ч); событие `ContactRequestReceived`.
+2. Adaptive puzzle перед handshake от незнакомой ноды (§11B.2) — тот же код; контакты (Tier 1)
+   без puzzle; `ratelimit.rs` tiers подключить к `ConnectionManager` в демоне.
+3. Опционально: `access.http.url` для iroh-relay → сервис, который пускает EndpointId после первой
+   успешной регистрации mailbox.
+4. Отложено (после релиза, низкий приоритет): `IdentityStamp` — Hashcash-штамп над детерминированным
+   pubkey (`BLAKE3("aira/identity-stamp/v1" ‖ pubkey ‖ bits ‖ nonce)`, 22 бита ≈ 0,5–1 с),
+   пересчитывается в фоне, снижает PoW на ContactRequest; Privacy Pass rate-limited tokens.
+5. Спека: §13.2 (`spec/15-spam.md`) под adaptive difficulty, дубликат §13 из `spec/14-groups.md`
+   удалить; новый §11B.10 «Стоимость identity» с этим вердиктом; таблица времён §11B.2 из бенча M19a.
+
+### Milestone 23 — Release hardening и публичная бета (1–2 недели → v0.5.0-beta.1)
+
+Чеклист «минимум для беты» (аудит §6.6.7):
+
+1. CI: `cargo audit`, `cargo deny`, clippy на актуальном stable — блокирующие jobs; интеграционные
+   тесты M19/M21 в матрице.
+2. Подписи: Android release keystore + `apksigner verify` (обязательно); Windows — SignPath
+   Foundation (бесплатно для OSS; запасной Certum OSS ~$50; Azure Artifact Signing физлицам вне
+   US/CA недоступен, EV репутации больше не даёт); macOS — Developer ID $99 + notarization (иначе
+   Sequoia+ через System Settings, Homebrew с 01.09.2026 не принимает). Отказ — честно в INSTALL.md.
+3. Документы: `README.md`, `SECURITY.md` (контакт, ключ, 90 дней), `docs/THREAT_MODEL.md` (из §11
+   с пометками «реализовано/план»), `PRIVACY.md` (что видит оператор relay), `CHANGELOG.md`,
+   `INSTALL.md` (relay по умолчанию, статус Android).
+4. `release.yml`: `actions/attest-build-provenance` (SLSA L3, бесплатно для публичных репо),
+   бинари через `cargo-auditable`, SBOM `cargo-cyclonedx`, sha256.
+5. Схема версии БД (M19 Phase A) + явная политика «бета не гарантирует совместимость баз до 1.0».
+6. Android: либо доведён (M19b Android-пакет), либо APK не публикуется в бете. Flathub —
+   исключить (политика 2026 запрещает AI-assisted код и PR). Play — не в бете.
+7. GitHub Releases pre-release `0.5.0-beta.N`, шаблон bug report, известные ограничения.
+
+Для 1.0 (после беты): внешний аудит aira-core + aira-relay (OTF Red Team Lab / OSTIF / NLnet NGI
+Zero после возобновления calls), reproducible builds (`trim-paths`, `SOURCE_DATE_EPOCH`) с
+независимой проверкой, `cargo vet` с импортом Mozilla/Google, winget / Homebrew tap / F-Droid
+(reproducible + flavor без FCM), решение по Android developer verification до 2027.
+
+### Пересмотр Milestone 9.6 и 14–17
+
+- **M9.6:** Phase A выполняется в M18; Phase B — в M19b; Phase C/D (i18n, темы) и E — после беты.
+- **M16 (разметка)** — дёшево и безопасно, первым после беты. **M15 (голосовые)** — после M16.
+- **M17 (Tauri)** — после того, как сетевой слой стабилен в демоне; иначе перенос UI поверх
+  неработающей доставки удваивает миграционный долг.
+- **M14 (браузер)** — последним: зависит от relay-only режима (M20) и протокола relay v2 (M21);
+  `redb-opfs` отсутствует на crates.io (GitHub wireapp/redb-opfs, 2025-09-25) — нужно решение по
+  хранилищу; `getrandom` 0.4 (не 0.3, §14.1 п.3) с `--cfg getrandom_backend="wasm_js"`; п.14.3.5
+  «опционально iroh 1.0» устарел — iroh 1.1 обязателен (M18). Детали — после результата
+  исследования wasm (аудит §6).
+
+---

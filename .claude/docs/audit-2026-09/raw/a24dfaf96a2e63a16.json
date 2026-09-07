@@ -1,0 +1,209 @@
+{
+ "scope": "Аудит crates/aira-daemon (main.rs 204 стр., handler.rs 1561, ipc.rs 325, types.rs 868, client.rs 242, transfers.rs 287, lib.rs 24) и crates/aira-storage (lib.rs, pending.rs, dedup.rs, sessions.rs, encrypted.rs, backup.rs, settings.rs, messages.rs, contacts.rs, types.rs, groups.rs, pseudonyms.rs, devices.rs) на HEAD 971e038. Фокус: offline-путь (pending/dedup/sessions), шифрование БД, IPC, конфиг демона, группы/трансферы, unwrap/unsafe, тесты. Только Read/Grep/awk, без cargo. Использованы данности предыдущих агентов (демон без Endpoint/Router, RelayClient не используется, dequeue не вызывается) и facts-crates.md.",
+ "summary": "**Ответ «что происходит с сообщением, если получатель офлайн 3 дня»:** ничего не происходит — и не только 3 дня, а никогда. `DaemonRequest::SendMessage` (handler.rs:61-76) создаёт `StoredMessage{sender_is_self:true, expires_at:None}` и пишет его в таблицу `messages` через `messages::store` (handler.rs:72); в `pending_messages` 1:1-текст НЕ кладётся, ratchet не применяется (в daemon нет ни одного вызова `sessions::save/load`, `RatchetSession`, `handshake::*` — единственные вызовы `sessions::save` — в backup.rs:182,205), `pending::dequeue/peek` в production не вызываются, `RelayClient` не создаётся, `dedup::is_duplicate` не вызывается нигде кроме своих тестов. Клиент получает `DaemonResponse::Ok` (= «отправлено»), сообщение остаётся в локальной истории навсегда (TTL-GC main.rs:167-177 удаляет только по `expires_at`, который для исходящих никогда не выставляется — он ставится лишь в `mark_read`, messages.rs:123). Через 3 дня, 3 месяца и после возврата получателя в сеть — у получателя ничего нет. Для групп/файлов чуть иначе: `SendGroupMessage`, `GroupControl` и `FileStart` кладутся в `pending_messages` (handler.rs:316, 470, 909) как **plaintext** `PlainPayload` postcard-байты, таблица PENDING не шифруется storage-ключом (lib.rs:123-124, pending.rs:3-4), лимитов/TTL у очереди нет, и её никто не читает.\n\n**Что минимально нужно добавить в daemon для сетевой интеграции** (точки подключения):\n1. `main.rs:100-160` — после `Storage::open` поднять `aira_net::endpoint::AiraEndpoint::bind(Some(secret_key))` (endpoint.rs:45), где `secret_key` детерминированно из seed (новый KDF-контекст, напр. `aira/iroh/identity/0` — в docs/KEY_CONTEXTS.md его нет: там только relay/mailbox/v1 и obfs/reality, строки 74-95), затем `protocol::build_router(&ep, ChatHandler::new(n), HandshakeHandler::new(n), Arc<RelayServer>, Some(&blob_store))` (protocol.rs:178-195) — получить `mpsc::Receiver<IncomingMessage>` (protocol.rs:26-31) и `Receiver<IncomingHandshake>` (protocol.rs:102-109).\n2. Новый модуль `aira-daemon/src/net_task.rs` (или `session.rs`): `SessionManager {HashMap<pubkey, RatchetSession>}` — при старте `sessions::list_contacts` (sessions.rs:77) → `sessions::load` (sessions.rs:44) → `RatchetSession::from_snapshot` (ratchet.rs:484); после КАЖДОГО send/recv `to_snapshot` (ratchet.rs:440) → `sessions::save` (sessions.rs:20) **до** отправки в сеть (иначе crash между send и save = повтор counter/ключа цепочки).\n3. `handler.rs:29-36` `handle_request` — синхронный `Fn(DaemonRequest)->DaemonResponse` (ipc.rs:62), вызывается прямо в tokio-таске (ipc.rs:144, 239). Нужно либо сделать async, либо добавить `net_tx: mpsc::Sender<NetCommand>` в аргументы: `SendMessage` → зашифровать ratchet'ом → `pending::enqueue(cid, postcard(EncryptedEnvelope))` → `net_tx.send(Deliver{cid})`; аналогично `enqueue_group_control` (handler.rs:300-320), `handle_send_group_message` (441-477), `handle_send_file` (863-949).\n4. `pending_drain` таск: `pending::peek` (pending.rs:45) → `ep.connect(addr, alpn::CHAT)` (endpoint.rs:115) → `connection::write_framed` (connection.rs:27) → ack → `pending::dequeue` (pending.rs:67); триггеры: старт, входящее соединение, backoff-таймер; fallback — `RelayClient::new(ep, relay_addr).deposit(mailbox_id, envelope)` (relay.rs:353, 383) с `mailbox_id = derive_mailbox_id(shared_secret)` (relay.rs:85).\n5. Входящий путь: `IncomingMessage{from, message}` → ratchet decrypt (ratchet.rs:323 проверяет MAX_ENVELOPE_SIZE) → `dedup::is_duplicate` (dedup.rs:18) → существующий `handle_incoming_payload(storage, seed, sender_pubkey, payload_bytes, &event_tx)` (handler.rs:621-674) — он уже рассылает `DaemonEvent::MessageReceived`; `ContactOnline/Offline` (types.rs:308-310) — по `ConnectionManager::set_connected/set_disconnected` (connection.rs:155-172).\n6. Storage: `ContactInfo` (types.rs:13-24: pubkey, alias, added_at, verified, blocked) не содержит iroh `EndpointAddr` — демон не знает, куда звонить. `InvitationLink` (discovery.rs:20-30) несёт `endpoint_addr_bytes`, но `DaemonRequest::AddContact{pubkey, alias}` (types.rs:28-33) его отбрасывает. Нужны: поле `endpoint_addr: Vec<u8>` + `relays: Vec<..>` в ContactInfo (миграция схемы), ключи `settings` `relay/endpoints`, `net/...` (конвенция уже есть: `relay/url` в settings.rs:3, `transport/mode` handler.rs:19), env `AIRA_RELAY` для первого запуска, `DaemonRequest::{SetRelay, GetNetStatus}`, `DaemonEvent::DeliveryState{id, Sent|Queued|Relayed|Delivered}`.\n7. Перед всем этим — миграция iroh 0.97→1.1 (по данности: публичные relay n0 отключаются 30.09.2026), `Endpoint::empty_builder` (endpoint.rs) уже ломается на 1.x.\n\nИтог по крейтам: storage-слой (redb, ChaCha20-Poly1305 на значения, ключ `aira/storage/0` из seed — main.rs:101, KEY_CONTEXTS.md:15) и IPC (Unix socket / named pipe, 4-байтный LE length prefix, лимит 1 MB — ipc.rs:4, 15) работают и покрыты unit-тестами (storage 84, daemon 53), production-путях нет unwrap/expect/panic/unsafe (awk-скан всех src, `#![deny(unsafe_code)]` lib.rs:19). Но всё, что касается доставки — pending, dedup, sessions, relay, transfers, device sync — библиотечный код без потребителя.",
+ "implemented": [
+  {
+   "feature": "pending_messages очередь (aira-storage/src/pending.rs)",
+   "evidence": "Ключ (contact_id:u64 = BLAKE3(pubkey)[0..8] LE — types.rs:177-183, seq:u64), значение — сырые байты (pending.rs:6-7, 21-36). API: enqueue/peek/dequeue/count/clear (pending.rs:21, 45, 67, 104, 126). FIFO по seq в пределах контакта, seq = max+1 через полный range-scan (next_seq_for pending.rs:157-173). Таблица НЕ шифруется storage-ключом (lib.rs:123-124). Потребители в daemon: только enqueue (handler.rs:316, 470, 909); dequeue/peek — только в тестах handler.rs:1076, 1226, 1467.",
+   "quality": "works-but-rough",
+   "note": "Нет TTL, нет лимитов 1000 msg / 100 MB (spec/04-protocol-wire.md:203), нет размера записи; enqueue и count — O(n) по очереди контакта. Docstring pending.rs:3 обещает EncryptedEnvelope, реально кладётся plaintext PlainPayload (handler.rs:298-299, 305, 464)."
+  },
+  {
+   "feature": "Dedup-окно 24h (aira-storage/src/dedup.rs)",
+   "evidence": "is_duplicate(storage, message_id:[u8;16]) — таблица SEEN_IDS message_id→unix_secs (dedup.rs:18-44), окно DEDUP_WINDOW_SECS = 86400 (lib.rs:77); gc_expired (dedup.rs:54-88) вызывается при старте (main.rs:114) и каждый час (main.rs:179-189; в FFI runtime.rs:111-117 тоже).",
+   "quality": "works-but-rough",
+   "note": "is_duplicate не вызывается ни в одном production-пути (grep по всем крейтам — только dedup.rs). EncryptedEnvelope (proto.rs:23-30) содержит nonce/counter/ciphertext и НЕ содержит message_id; StoredMessage.id генерируется получателем через rand_id (handler.rs:639) — ключ дедупа по 16-байтному id ниоткуда не берётся. Рабочий ключ для сетевого дедупа — (sender_pubkey, envelope.counter) или BLAKE3(envelope)."
+  },
+  {
+   "feature": "Персист ratchet-состояния (aira-storage/src/sessions.rs)",
+   "evidence": "save/load/remove/list_contacts (sessions.rs:20, 44, 62, 77); ключ — pubkey контакта, значение — postcard(RatchetSnapshot), зашифрованный encrypt_value (sessions.rs:25). RatchetSnapshot определён в aira-core/src/ratchet.rs:126-146 (root_key, send/recv chain, DH, PQ-ключи, skipped_entries), zeroize при Drop (ratchet.rs:148-160), to_snapshot/from_snapshot — ratchet.rs:440, 484.",
+   "quality": "works-but-rough",
+   "note": "В daemon сессии не создаются и не сохраняются никогда: единственные вызовы sessions::save — backup.rs:182, 205 (restore). При перезапуске восстанавливать нечего. Handshake-примитивы есть в aira-core/src/handshake.rs:75-213 и HandshakeHandler в aira-net/src/protocol.rs:116-130, но демон их не использует."
+  },
+  {
+   "feature": "Шифрование значений redb (aira-storage/src/encrypted.rs)",
+   "evidence": "ChaCha20-Poly1305, формат nonce(12, random через rand::thread_rng)||ciphertext (encrypted.rs:29-44), decrypt проверяет MIN_ENCRYPTED_LEN=28 (encrypted.rs:19, 56-58). Ключ storage_key = master_seed.derive(\"aira/storage/0\") (main.rs:101; lib.rs:3-4; docs/KEY_CONTEXTS.md:15), хранится как Zeroizing<[u8;32]> (lib.rs:127). Шифруются messages, sessions, settings, contacts, groups, devices, pseudonyms (grep encrypt_value: contacts 5, groups 4, devices 3, pseudonyms 2 вхождения).",
+   "quality": "works-but-rough",
+   "note": "Один ключ на всю жизнь БД без ротации; нет AAD (не привязано к таблице/ключу строки) — ciphertext переставляем между строками при доступе к файлу на запись. Нет версии схемы БД (Storage::open lib.rs:139-161 только открывает таблицы; grep migrat/schema_version/RepairSession — 0 совпадений). Порча файла → redb::DatabaseError → main.rs:110 `?` → демон падает при старте."
+  },
+  {
+   "feature": "Backup export/import (aira-storage/src/backup.rs)",
+   "evidence": "Формат: MAGIC b\"AIRA\" + VERSION=1 + encrypt_value(postcard(BackupData)) (backup.rs:20-23, 104-111). BackupData = contacts, settings (расшифрованные), ratchet_states (расшифрованные snapshot), messages (опционально) (backup.rs:27-36, 49-101). import проверяет magic/version (backup.rs:135-141), restore пишет обратно через contacts/settings::set/sessions::save/messages::store (backup.rs:160-191). Тесты: 5 (export_import_roundtrip и др.).",
+   "quality": "works-but-rough",
+   "note": "Не включает groups, group_messages, devices, sync_log, pseudonyms, pseudonym_counter, pending. После restore на чистой БД pseudonym_counter стартует с 0 (pseudonyms.rs:22-32) → повторная деривация тех же псевдонимов для новых контекстов (нарушение unlinkability §12.6) и потеря членства в группах."
+  },
+  {
+   "feature": "IPC-сервер и клиент (aira-daemon/src/ipc.rs, client.rs)",
+   "evidence": "Unix domain socket ~/.aira/daemon.sock (main.rs:44-49, 60-64) / Windows named pipe \\\\.\\pipe\\aira-daemon (main.rs:65-69). Кадр: u32 LE длина + postcard (ipc.rs:17-43), MAX_IPC_MSG_SIZE = 1 MiB на обеих сторонах (ipc.rs:15, client.rs:17). Один соединение = один request/response loop + отдельный таск-форвардер событий из broadcast (ipc.rs:117-160, 212-255); ServerMessage::{Response, Event} мультиплексирует (types.rs:290-295). DaemonClient::connect/request (client.rs:83, 149) общий для cli/bot.",
+   "quality": "works-but-rough",
+   "note": "Аутентификации нет; права на сокет не выставляются (grep set_permissions/0o600/peer_cred в ipc.rs/main.rs/client.rs — пусто). Windows: фиксированное глобальное имя пайпа, first_pipe_instance(false) (ipc.rs:182), security descriptor не задан. Форвардер событий выходит из цикла при RecvError::Lagged (ipc.rs:129, 224; ёмкость канала 256 — main.rs:120). Второй экземпляр демона того же пользователя блокируется только неявно — redb file lock в Storage::open (main.rs:110)."
+  },
+  {
+   "feature": "Конфигурация демона (aira-daemon/src/main.rs)",
+   "evidence": "Единственные входы: env AIRA_SEED (24-слов BIP-39, main.rs:85-90; Argon2id в spawn_blocking main.rs:94-98), AIRA_LOG (main.rs:76), HOME / LOCALAPPDATA для data dir (main.rs:47, 53). Argv не парсится (нет clap, нет std::env::args в main.rs/Cargo.toml). Файлы: <data_dir>/aira.redb (main.rs:109), <data_dir>/downloads (main.rs:130). Настройки в таблице settings: ключи по конвенции \"ttl/<hex pubkey>\" (settings.rs:70), \"transport/mode\" (handler.rs:19; значения из aira_net::transport::TransportMode, default \"direct\" handler.rs:857), \"relay/url\" упомянут только в doc/тестах (settings.rs:3, 126).",
+   "quality": "works-but-rough",
+   "note": "Конфигурации сети/relay/bootstrap нет вообще. Логичное место: таблица settings (settings::get/set, settings.rs:16, 34) + env-override для первого запуска + новые IPC-запросы SetRelay/GetNetStatus. BlobStore — in-memory, transient (main.rs:122-124)."
+  },
+  {
+   "feature": "IPC-протокол: enum DaemonRequest (aira-daemon/src/types.rs:12-172)",
+   "evidence": "SendMessage{to,text} :14 · GetHistory{contact,limit} :21 · AddContact{pubkey,alias} :28 · RemoveContact{pubkey} :35 · GetContacts :40 · GetMyAddress :42 · SetTtl{contact,ttl_secs:Option<u64>} :44 · ExportBackup{path,include_messages} :51 · ImportBackup{path} :58 · SendFile{to,path} :63 · SetTransportMode{mode:String} :73 · GetTransportMode :78 · Shutdown :81 · CreateGroup{name,members} :85 · GetGroups :92 · GetGroupInfo{group_id:[u8;32]} :94 · SendGroupMessage{group_id,text} :99 · GetGroupHistory{group_id,limit} :106 · GroupAddMember{group_id,member} :113 · GroupRemoveMember{group_id,member} :120 · LeaveGroup{group_id} :127 · AcceptGroupInvite{group_id,display_name,invited_by} :132 · GetPseudonyms :143 · GetPseudonym{counter:u32} :145 · FindPseudonym{context_id:[u8;32]} :150 · GenerateLinkCode :157 · LinkDevice{code,device_name} :159 · GetDevices :166 · UnlinkDevice{device_id:[u8;32]} :168. DaemonResponse (types.rs:176-222): Ok, Error(String), History, Contacts, MyAddress(Vec<u8>), TransportMode(String), GroupCreated{group_id}, GroupInfo, Groups, GroupHistory, Pseudonyms, Pseudonym(Option), LinkCode(String), DeviceLinked{device_id,name}, Devices. Диспетчер — handler.rs:29-253.",
+   "quality": "production",
+   "note": "Сетевых запросов нет: ни SetRelay, ни статуса соединения, ни delivery-state. GetMyAddress (handler.rs:77-95) возвращает свежий псевдонимный ML-DSA pubkey (§12.6.5), не iroh-адрес."
+  },
+  {
+   "feature": "IPC-протокол: enum DaemonEvent (aira-daemon/src/types.rs:299-389)",
+   "evidence": "MessageReceived{from:Vec<u8>,payload:Vec<u8>} :301 · ContactOnline(Vec<u8>) :308 · ContactOffline(Vec<u8>) :310 · FileProgress{id:[u8;16],bytes_sent,total} :312 · FileComplete{id,path} :321 · FileError{id,error} :328 · GroupMessageReceived{group_id,from,payload} :337 · GroupMemberJoined{group_id,member} :346 · GroupMemberLeft{group_id,member} :353 · GroupInvite{group_id,name,invited_by} :360 · DeviceLinked{device_id,name} :371 · DeviceUnlinked{device_id} :378 · SyncCompleted{device_id,messages_synced} :383. Источники: handle_incoming_payload (handler.rs:648, 667), handle_incoming_group_control (680+), TransferManager (transfers.rs:73-160).",
+   "quality": "production",
+   "note": "ContactOnline/Offline нигде не эмитятся (grep — только определение и тест types.rs:510-514). Для сетевого milestone добавить DeliveryState{message_id, state} и NetStatus."
+  },
+  {
+   "feature": "Группы в daemon (handler.rs)",
+   "evidence": "handle_create_group (354-438): деривация псевдонима через seed.derive_pseudonym_seeds (326-352), SenderKey creator (430), рассылка GroupControl::CreateGroup всем участникам через enqueue_group_control (300-320 → pending::enqueue :316). SendGroupMessage (441-477): store_group_message + fan-out PlainPayload::Text каждому участнику в pending (464-471). Add/Remove/Leave/AcceptInvite (480-609). Входящие GroupControl: handle_incoming_group_control (680+) — CreateGroup/AddMember/RemoveMember(ротация)/SenderKeyUpdate/Leave, тесты handler.rs (5 тестов на incoming group control). sender_chain_key хранится в GroupMemberInfo (storage types.rs:70), нули до SenderKeyUpdate (groups.rs:203, 286).",
+   "quality": "works-but-rough",
+   "note": "Всё «в никуда»: fan-out кладёт plaintext в очередь, которую никто не читает; sender chain keys (handler.rs:430, 602-604) лежат в нешифрованной таблице PENDING. Групповые сообщения не шифруются SenderKey на этом уровне — комментарий 462-463 делегирует это несуществующему «network layer»."
+  },
+  {
+   "feature": "Файловые трансферы (handler.rs:863-949, transfers.rs)",
+   "evidence": "handle_send_file: проверка размера ≤ MAX_FILE_SIZE = 4 GiB (handler.rs:880, blobs.rs:22), синхронный std::fs::read всего файла для BLAKE3 (895-898), enqueue PlainPayload::FileStart в pending (901-910), tokio::spawn импорта в in-memory BlobStore (912-946), затем start_send → update_progress(0) → update_progress(size) → complete (934-938) без какого-либо пира. TransferManager — state machine с событиями FileProgress/Complete/Error (transfers.rs:57-190, 4 теста).",
+   "quality": "stub",
+   "note": "Отправитель получает FileComplete, хотя файл никуда не ушёл. Принимающего обработчика ALPN FILE нет в build_router (protocol.rs:185-192: CHAT/HANDSHAKE/RELAY + iroh_blobs::ALPN). Полное чтение файла до 4 GiB в синхронном handler блокирует tokio worker (spec/10-daemon-ipc.md §8.1 требует spawn_blocking)."
+  },
+  {
+   "feature": "Мультидевайс в daemon (handler.rs:190-253)",
+   "evidence": "GenerateLinkCode/LinkDevice через aira_core::device::{generate_link_code, verify_link_code} (191, 195), device_id = blake3::derive_key(\"aira/device/id-from-code\", code) (200), сохранение DeviceInfo{node_id: vec![] — «Populated when device announces its iroh NodeId», 208}.",
+   "quality": "stub",
+   "note": "node_id никогда не заполняется, sync_log никем не пишется, SyncCompleted не эмитится."
+  },
+  {
+   "feature": "Периодические задачи демона (main.rs:163-190) и FFI-runtime",
+   "evidence": "TTL GC messages::delete_expired каждые 30 с (main.rs:167-177), dedup GC каждый час (179-189). aira-ffi/src/runtime.rs:101-117 повторяет те же два таска и вызывает тот же handler::handle_request (runtime.rs:370) — Android тоже без сети.",
+   "quality": "works-but-rough",
+   "note": "delete_expired расшифровывает и десериализует ВСЕ сообщения каждые 30 с (messages.rs:153-169) — O(N) полный скан."
+  },
+  {
+   "feature": "Тесты daemon/storage",
+   "evidence": "aira-daemon — 53 unit-теста, интеграционных нет (каталог crates/aira-daemon/tests отсутствует): types.rs 29 (все — postcard roundtrip запросов/ответов/событий), handler.rs 14 (эффекты в storage: enqueue в pending, обработка incoming GroupControl, псевдонимы, link code; handle_incoming_payload_text_stores_message :1312), ipc.rs 3 (framing через in-memory Cursor, не реальный сокет), client.rs 3 (read_server_message roundtrip, reject >1 MB, путь сокета), transfers.rs 4 (state machine). aira-storage — 84 unit: backup 5, contacts 7, dedup 4, devices 9, encrypted 7, groups 9, lib 2, messages 8, pending 6 (FIFO, count, clear, независимость контактов), pseudonyms 8, sessions 6, settings 5, types 8. Сетевые интеграционные тесты только в aira-net/tests: two_node_chat.rs, relay_offline.rs (message_relay_when_peer_offline :18, relay_mailbox_id_is_deterministic :91, relay_quota_enforcement :105), dpi_simulator.rs.",
+   "quality": "works-but-rough",
+   "note": "Ни один тест не поднимает реальный IPC-сокет/пайп, не запускает main.rs, не проверяет dequeue→сеть, не гоняет два демона. facts-crates.md даёт «daemon 50+3» — расхождение ±3, вероятно платформенные/doctest."
+  }
+ ],
+ "findings": [
+  {
+   "title": "Сетевой путь в демоне отсутствует: сообщения никогда не покидают локальную БД",
+   "severity": "blocker",
+   "evidence": "handler.rs:61-76 SendMessage → только messages::store, без pending::enqueue, без ratchet; main.rs:100-160 не создаёт AiraEndpoint/Router/RelayClient; grep по всем крейтам: sessions::save только backup.rs:182,205; pending::dequeue/peek только в тестах handler.rs:1076,1226,1467; dedup::is_duplicate только dedup.rs; handle_incoming_payload (handler.rs:621) только из теста :1322. Сетевые примитивы готовы, но без потребителя: AiraEndpoint::bind/connect/accept (endpoint.rs:45,115,129), build_router + ChatHandler/HandshakeHandler (protocol.rs:38-195), RelayClient::deposit/retrieve/ack (relay.rs:383,409,420), ConnectionManager (connection.rs:131-190).",
+   "impact": "Клиент показывает «отправлено», получатель не получает ничего ни онлайн, ни через 3 дня. Релиз в таком виде невозможен. Все остальные offline-механизмы (pending, dedup, sessions, relay) — мёртвый код.",
+   "recommendation": "См. summary, пункты 1-7: net_task в main.rs после Storage::open; SessionManager с load/save snapshot (sessions.rs:20,44; ratchet.rs:440,484) — save ДО отправки; handle_request получает mpsc::Sender<NetCommand> или становится async; SendMessage/группы/FileStart → ratchet-encrypt → pending::enqueue(EncryptedEnvelope) → прямая доставка → fallback deposit в relay; входящие IncomingMessage → decrypt → is_duplicate → handle_incoming_payload; ContactOnline/Offline из ConnectionManager. Сначала миграция iroh 0.97→1.1 (endpoint.rs)."
+  },
+  {
+   "title": "pending_messages хранит plaintext (в т.ч. sender chain keys групп) в нешифруемой таблице",
+   "severity": "high",
+   "evidence": "pending.rs:3-4 и lib.rs:123-124: таблица PENDING исключена из storage-шифрования «потому что там уже ratchet-encrypted envelope»; фактически enqueue_group_control кладёт postcard(PlainPayload::GroupControl) (handler.rs:305-316) с creator_sender_key (:430) и SenderKeyUpdate.new_key (:602-606), SendGroupMessage — PlainPayload::Text (:464-470), SendFile — FileStart с именем/хэшем файла (:901-909).",
+   "impact": "Открытый текст групповых сообщений и групповые ключи лежат на диске в aira.redb без шифрования; при реализации сети формат очереди придётся менять (миграция).",
+   "recommendation": "Зафиксировать инвариант: в PENDING только postcard(EncryptedEnvelope) после ratchet (как обещает pending.rs:3 и spec/04-protocol-wire.md:196-197); до этого — шифровать значения PENDING storage-ключом как остальные таблицы; добавить debug_assert/тип-обёртку PendingEnvelope вместо &[u8]."
+  },
+  {
+   "title": "Очередь pending без лимитов, TTL и порядка по ratchet-counter",
+   "severity": "high",
+   "evidence": "pending.rs:21-36 enqueue без проверки count/размера; нет поля timestamp/expiry; порядок — локальный seq через полный скан next_seq_for (pending.rs:157-173), count — O(n) итерация (pending.rs:104-117). Spec: 1000 сообщений / 100 MB на контакт, порядок по counter (spec/04-protocol-wire.md:199-203).",
+   "impact": "Неограниченный рост БД при долгом офлайне контакта; O(n) на каждый enqueue; после реализации сети нельзя отличить «протухшее» сообщение от актуального.",
+   "recommendation": "Добавить в значение заголовок {enqueued_at, size} или отдельную таблицу pending_meta; enforce 1000/100 MB с DaemonResponse::Error(QueueFull); хранить per-contact счётчик seq в settings/отдельной таблице вместо скана; GC по TTL (7 дней как у relay, relay.rs:112) в периодическом таске main.rs."
+  },
+  {
+   "title": "Dedup не подключаем к сети: у EncryptedEnvelope нет message_id",
+   "severity": "high",
+   "evidence": "dedup.rs:18 ключ — [u8;16] message_id; proto.rs:23-30 EncryptedEnvelope{nonce, counter, ciphertext}; StoredMessage.id генерируется получателем rand_id (handler.rs:639, 658); is_duplicate нигде не вызывается.",
+   "impact": "При relay-доставке + retry (spec/08-protocol-security.md:52) дубликаты не отфильтруются; ratchet при повторе того же counter выдаст ошибку, но для skipped-keys окна дубликат может пройти дважды в историю.",
+   "recommendation": "Ключ дедупа = BLAKE3(sender_pubkey ‖ envelope.counter ‖ nonce)[..16] или (sender, counter) — вызывать is_duplicate до ratchet-decrypt в net_task; либо добавить message_id в PlainPayload (изменение wire-формата)."
+  },
+  {
+   "title": "IPC без аутентификации и без ограничения прав на сокет/пайп",
+   "severity": "high",
+   "evidence": "ipc.rs:66-114 UnixListener::bind без set_permissions (grep 0o600/set_permissions/peer_cred — 0); ipc.rs:164-209 Windows ServerOptions без security descriptor, first_pipe_instance(false) (:182), фиксированное имя \\\\.\\pipe\\aira-daemon (main.rs:68). Любой подключившийся может Shutdown (types.rs:81), ExportBackup{path} в произвольный путь (:51), ImportBackup, SendMessage.",
+   "impact": "На Windows любой локальный процесс/пользователь может управлять демоном и выгрузить расшифрованный бэкап (backup.rs:66-76 кладёт расшифрованные ratchet snapshots); второй пользователь на той же машине не может запустить свой демон (коллизия имени), возможен pipe squatting.",
+   "recommendation": "Unix: chmod 0700 на ~/.aira и 0600 на сокет сразу после bind, проверка SO_PEERCRED uid. Windows: имя пайпа с SID/именем пользователя, first_pipe_instance(true) для первого экземпляра, security descriptor «только текущий пользователь» (tokio ServerOptions::security_attributes или windows-sys), плюс простой auth-токен в файле <data_dir>/ipc.token (0600) в первом кадре."
+  },
+  {
+   "title": "Синхронный handler блокирует tokio runtime; чтение файла до 4 GiB в память",
+   "severity": "medium",
+   "evidence": "ipc.rs:62 RequestHandler = Fn(DaemonRequest)->DaemonResponse, вызов в async-таске ipc.rs:144/239; handler.rs:895 std::fs::read(&path) для BLAKE3 при MAX_FILE_SIZE 4 GiB (blobs.rs:22); redb write-транзакции синхронные. Spec/10-daemon-ipc.md §8.1 требует spawn_blocking для тяжёлых операций.",
+   "impact": "Один SendFile большого файла подвешивает все IPC-соединения и (после интеграции) сетевые таски; OOM при файлах в гигабайты.",
+   "recommendation": "Сделать handle_request async (или обернуть вызов в spawn_blocking в ipc.rs), хэшировать файл потоково (blake3::Hasher + tokio::fs) внутри уже существующего tokio::spawn (handler.rs:914)."
+  },
+  {
+   "title": "Форвардер событий IPC умирает молча при отставании клиента",
+   "severity": "medium",
+   "evidence": "ipc.rs:129 и :224 `while let Ok(event) = event_rx.recv().await` — broadcast::RecvError::Lagged завершает цикл; ёмкость канала 256 (main.rs:120).",
+   "impact": "После всплеска >256 событий (drain очереди при возврате контакта, FileProgress) GUI/CLI перестают получать события до переподключения, без ошибки.",
+   "recommendation": "Обрабатывать Err(Lagged(n)) — логировать и продолжать (можно послать событие Resync), закрывать только на Closed; поднять ёмкость до 4096."
+  },
+  {
+   "title": "Backup не покрывает группы, устройства, псевдонимы, counter и pending",
+   "severity": "medium",
+   "evidence": "backup.rs:27-36 BackupData = contacts, settings, ratchet_states, messages; restore backup.rs:160-191; pseudonyms::next_counter стартует с 0 при отсутствии записи (pseudonyms.rs:26).",
+   "impact": "Восстановление на новом устройстве теряет группы (и sender keys), связанные устройства; повторная деривация псевдонимов с counter 0 нарушает unlinkability §12.6 и может выдать контакту уже использованный pubkey.",
+   "recommendation": "VERSION=2 бэкапа (backup.rs:23 уже версионирован): добавить groups, group_messages, devices, pseudonyms + pseudonym_counter; pending не бэкапить, но при restore выставить counter ≥ max(pseudonyms)+1."
+  },
+  {
+   "title": "Нет версии схемы БД — любое изменение postcard-структур ломает существующие базы",
+   "severity": "medium",
+   "evidence": "Storage::open lib.rs:139-161 только open_table; grep migrat/schema_version/SCHEMA_VERSION/RepairSession — 0 совпадений; значения — postcard без тегов полей (messages.rs:20, contacts, groups). Для сетевого milestone придётся менять ContactInfo (адрес), формат PENDING, StoredMessage (delivery state).",
+   "impact": "После обновления релиза старые aira.redb дадут StorageError::Serialization на каждом чтении; пользователь потеряет историю.",
+   "recommendation": "Таблица meta {schema_version:u32}; при open — цепочка миграций; для первого релиза зафиксировать v1 и написать миграцию v1→v2 вместе с изменением ContactInfo."
+  },
+  {
+   "title": "Storage-шифрование без AAD и без привязки к таблице/ключу строки",
+   "severity": "low",
+   "evidence": "encrypted.rs:29-44 encrypt(nonce, plaintext) без associated data; один storage_key на все таблицы (lib.rs:125-128); nonce случайный 96-бит через rand::thread_rng (encrypted.rs:32-33).",
+   "impact": "Злоумышленник с правом записи в aira.redb может переставить ciphertext между строками (например, подменить ratchet snapshot одного контакта другим) — не обнаружится. Коллизия nonce — ~n²/2^97, практически нерелевантна до ~2^32 записей, но save snapshot на каждое сообщение приближает к этому за годы.",
+   "recommendation": "encrypt_with_aad(key, aad = table_name ‖ row_key, plaintext) через Payload{msg, aad}; опционально per-table subkeys (BLAKE3 derive_key от storage_key, задокументировать в KEY_CONTEXTS.md)."
+  },
+  {
+   "title": "Ключ messages (contact_id, timestamp_micros) — коллизия в одну микросекунду затирает сообщение",
+   "severity": "low",
+   "evidence": "messages.rs:3, 27 table.insert((contact_id, msg.timestamp_micros)) — insert заменяет; timestamp назначается получателем now_micros() (handler.rs:642, 661).",
+   "impact": "При drain очереди/relay retrieve пачки сообщений в цикле возможны одинаковые микросекунды → потеря сообщений в истории.",
+   "recommendation": "Ключ (contact_id, timestamp_micros, id[..8]) или монотонный счётчик; либо проверка занятости ключа с инкрементом."
+  },
+  {
+   "title": "TTL-GC делает полный decrypt всех сообщений каждые 30 секунд",
+   "severity": "low",
+   "evidence": "messages.rs:146-169 delete_expired итерирует MESSAGES и decrypt_value каждую запись; main.rs:167-177 интервал 30 с; то же в runtime.rs:104-110 (Android).",
+   "impact": "На истории в десятки тысяч сообщений — постоянная нагрузка CPU/батареи, особенно на Android.",
+   "recommendation": "Вторичная таблица expiry (expires_at → key) или хранить expires_at в ключе/незашифрованном префиксе; интервал 5 мин."
+  },
+  {
+   "title": "Отправитель файла получает FileComplete без передачи",
+   "severity": "low",
+   "evidence": "handler.rs:934-938 start_send → update_progress(size) → complete сразу после импорта в in-memory BlobStore (main.rs:122-124); ALPN FILE не обслуживается в build_router (protocol.rs:185-192).",
+   "impact": "UI врёт о доставке; при перезапуске демона blob исчезает.",
+   "recommendation": "complete только по FileAck от пира (proto.rs:17 FileAck есть); BlobStore на диск (iroh-blobs FsStore) для возобновления."
+  },
+  {
+   "title": "Production-пути daemon/storage чисты от unwrap/expect/panic/unsafe",
+   "severity": "info",
+   "evidence": "awk-скан всех crates/aira-daemon/src/*.rs и crates/aira-storage/src/*.rs до первого #[cfg(test)] — 0 совпадений по .unwrap()/.expect(/panic!/unreachable!/todo!/unsafe; #![deny(unsafe_code)] lib.rs:19; unwrap_or_default/unwrap_or_else — безопасные (dedup.rs:21, main.rs:36, 77).",
+   "impact": "Положительно: правило security.md §5 соблюдено.",
+   "recommendation": "Сохранить при интеграции сети: включить clippy::unwrap_used/expect_used как deny в aira-daemon (сейчас только allow в тестах, main.rs:11-18)."
+  }
+ ],
+ "spec_vs_code_drift": [
+  "spec/04-protocol-wire.md:196-203 (§6.3a): очередь хранит сообщения, зашифрованные Triple Ratchet, порядок по ratchet counter, лимит 1000/100 MB, автодоставка при появлении пира → код: plaintext PlainPayload (handler.rs:305, 464, 901), порядок по локальному seq (pending.rs:157-173), лимитов нет, доставки нет, 1:1-текст в очередь вообще не попадает (handler.rs:61-76).",
+  "spec/04-protocol-wire.md:205-214 (§6.3b relay): «критично для реального использования», TTL 7 дней → код: RelayServer/RelayClient только в aira-net (relay.rs), in-memory HashMap (relay.rs:149-151), демон не создаёт клиент; TTL 7 дней совпадает (relay.rs:112).",
+  "spec/10-daemon-ipc.md:31 DaemonEvent::MessageReceived{payload: PlainPayload} → код Vec<u8> (types.rs:301-306); spec FileProgress{bytes_received} → код FileProgress{bytes_sent, total} (types.rs:312-319); ContactOnline/Offline описаны в спеке и объявлены в коде, но никогда не эмитятся.",
+  "spec/10-daemon-ipc.md §8.1: CPU-heavy операции через spawn_blocking → handler синхронный внутри async (ipc.rs:62, 144), полное чтение файла std::fs::read (handler.rs:895).",
+  "spec/18-milestones.md:36-42 Milestone 3 «event loop, IPC сокет» и Milestone 2 п.5-8 «bootstrap-нода, deposit/retrieve, интеграционный тест через relay при офлайн пире» → в демоне event loop без сети; relay-тест есть только на уровне aira-net (tests/relay_offline.rs:18).",
+  "pending.rs:1-7 docstring («EncryptedEnvelope, already ratchet-encrypted, no storage-level encryption») противоречит фактическому использованию handler.rs:298-299 («network layer will encrypt when delivering»).",
+  "lib.rs:10 говорит sessions хранит `RatchetState`, sessions.rs:14 — `RatchetSnapshot` (реальный тип aira-core/src/ratchet.rs:126); косметика.",
+  "docs/KEY_CONTEXTS.md: контекста для деривации iroh SecretKey из seed нет (есть только aira/relay/mailbox/v1 :74 и obfs/reality :92-95); AiraEndpoint::bind(Option<SecretKey>) (endpoint.rs:45) в демоне не вызывается — при интеграции контекст нужно добавить."
+ ],
+ "open_questions": [
+  "Откуда демон возьмёт iroh EndpointAddr контакта: ContactInfo (types.rs:13-24) без адреса, AddContact{pubkey, alias} (types.rs:28-33) отбрасывает endpoint_addr_bytes из InvitationLink (discovery.rs:20-30). Решение — расширить ContactInfo + AddContact (миграция схемы) или полагаться на iroh discovery по EndpointId, выведенному из pubkey? (второе требует детерминированной связи identity→EndpointId).",
+  "Должен ли iroh SecretKey демона выводиться из seed (стабильный EndpointId = линкуемость по сети) или генерироваться случайно на устройство и храниться в settings (лучше для §12.6, но нужна публикация адреса контактам)? Нужен новый KDF-контекст в docs/KEY_CONTEXTS.md.",
+  "Ratchet-сессия хранится по contact pubkey (sessions.rs:4), а GetMyAddress выдаёт новый псевдоним на каждый вызов (handler.rs:77-95): по какому ключу контакт ищет сессию входящего сообщения — по псевдониму или по identity? Нужна таблица pseudonym→contact или включение pseudonym в IncomingMessage.",
+  "SendGroupMessage fan-out (handler.rs:466-471) проходит по всем group.members — включает ли список собственную запись отправителя (лишний enqueue самому себе)? Не проверено.",
+  "Стратегия persist ratchet snapshot: сохранять до отправки каждого сообщения (безопасно, +1 redb write-txn на сообщение) или батчить? При батчинге crash = повтор chain key.",
+  "Android (FFI runtime.rs:95-125 без сети, dataSync FGS ≤ 6 ч/сутки по данности аудита §4.1): будет ли net_task общим кодом daemon (lib) для FFI, и как обрабатывать relay retrieve по push?",
+  "Формат ключа дедупа для сети: (sender, counter) или хэш envelope; менять ли wire-формат PlainPayload ради message_id (совместимость с уже выпущенными v0.3.5 клиентами не критична, так как сети у них нет)."
+ ]
+}
