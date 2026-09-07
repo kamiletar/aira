@@ -1,0 +1,137 @@
+{
+ "file_written": "C:\\web\\aira\\.claude\\docs\\audit-2026-09\\security-compliance-audit.md",
+ "summary": "Формальный чеклист rules/security.md выполняется в ядре: deny(unsafe_code) стоит в aira-core и aira-storage, в production-путях всех восьми крейтов нет ни одного unwrap()/panic!/unreachable!/todo! (девять expect() — только на константах и инвариантах инициализации), все долгоживущие ключи обёрнуты в Zeroizing/ZeroizeOnDrop, все 30 KDF-контекстов из KEY_CONTEXTS.md найдены в коде и не пересекаются (единственное расхождение aira/device/id-from-code уже известно), все сетевые и IPC-рамки проверяют длину до аллокации (256 KB кадр, 1 MiB IPC, 64 KB envelope, u16-кадры транспортов), RNG везде thread_rng, единственный MAC (REALITY) сравнивается через subtle. За пределами ядра дисциплина держится на людях: deny(clippy::unwrap_used) только в aira-core; в aira-gui 4 из 6 unsafe без // SAFETY: (заменимы на String::zeroize()); seed-фраза и BIP-39-энтропия проходят через plain String/Vec<u8> в aira-core::seed, aira-daemon/main.rs и aira-ffi (0 использований zeroize при объявленной зависимости); RatchetSnapshot, SenderKeyState/Receiver, SyncItem, GroupControl выводят derive(Debug) с секретами; в workspace нет ни одного set_permissions/mode() — БД, backup, downloads и Unix-сокет создаются по umask. Главная новая находка (S1, HIGH): входящие GroupControl в aira-daemon/src/handler.rs:688-819 не проверяют авторизацию отправителя — CreateGroup от любого контакта создаёт группу с авто-акцептом и рассылкой наших ключей, AddMember/RemoveMember не требуют роли Admin, а AddMember.sender_keys перезаписывает sender-chain-ключи любых участников (после подключения приёма групп в M19 это подделка групповых сообщений), короткие ключи молча дополняются нулями; ветки приёма GroupMessage в демоне вообще нет. Вторая (S2, HIGH внутри threat-model DPI): транспорт REALITY (feature reality, не в default, не подключён) использует статичный session key на всех сессиях (повтор keystream), не защищён от replay auth-кадра в окне 60 с, ответ сервера без MAC, short_id уходит в открытом виде до TLS — активный пробер отличает Aira-сервер от fallback-сайта, что ломает саму цель REALITY. Дополнительно: obfs/mimicry ломают соединение на записи ровно 65 536 байт (chunk_len as u16 = 0), keychain GUI молча оставляет seed при неудачном удалении, relay без cap на число mailbox'ов и с Retrieve, не помещающимся в кадр, а 15+ парсеров внешних данных не покрыты fuzz (есть 2 таргета). Новых безусловных релиз-блокеров нет; S1 становится блокером, если групповые чаты входят в 1.0. Все находки S1–S20 разложены по M18/M19a/M19/M19b/M21/M22/M23 с path:line в §9 отчёта.",
+ "top_findings": [
+  {
+   "severity": "HIGH",
+   "title": "Входящие GroupControl без авторизации: любой контакт создаёт группу с auto-accept, любой участник добавляет/удаляет членов и перезаписывает чужие sender-chain-ключи; короткие ключи дополняются нулями; ветки приёма GroupMessage нет",
+   "location": "crates/aira-daemon/src/handler.rs:688-819 (auto-accept :737-739, sender_keys :764-768, len().min(32) :711-712,:766-767,:811-813; handle_incoming_payload :631-672)",
+   "fix": "До wiring групп в M19 Phase B: CreateGroup только как событие GroupInviteReceived без записи в БД и без auto-accept; AddMember/RemoveMember требуют role == Admin у sender_pubkey по нашей копии группы; sender_keys принимать только для new_member; все sender-key поля ровно 32 байта иначе Err; cap members ≤ MAX_GROUP_MEMBERS; добавить ветку PlainPayload::GroupMessage; 4 теста (AddMember от Member отклонён, чужой pk в sender_keys игнорируется, CreateGroup без accept не создаёт группу, ключ 31 байт отклонён)",
+   "milestone": "M19"
+  },
+  {
+   "severity": "HIGH",
+   "title": "REALITY: статичный session key на все сессии (повтор keystream), replay auth-кадра в окне 60 с без кэша nonce, ответ сервера без MAC, short_id в открытом виде до TLS, AcceptAnyCertVerifier — активный пробер отличает сервер от fallback",
+   "location": "crates/aira-net/src/transport/reality.rs:336-346, 385-396, 505-516, 541-575, 588-590, 707-715; fingerprint.rs:99-134,164-177; transport/mod.rs:445 (fallback_addr всегда None)",
+   "fix": "Либо переработать (session key = derive_key(\"aira/reality/session/1\", psk‖client_nonce‖server_nonce), MAC на ответ сервера, кэш client-nonce на 2×drift, short_id внутри TLS ClientHello через SessionIdPatcher, обязательный fallback, тесты на replay и различие keystream), либо исключить reality/obfs4/mimicry/cdn/tor из релизных сборок и пометить §13 spec «экспериментально, не в 1.0»; примечание в KEY_CONTEXTS.md к aira/reality/session/0",
+   "milestone": "M22"
+  },
+  {
+   "severity": "MEDIUM",
+   "title": "Seed-фраза и BIP-39-энтропия без Zeroizing в core (generate/generate_phrase_only/bip39_decode/rand_entropy), daemon (seed_phrase String + clone), ffi (String через JNI, 0 использований zeroize), gui keychain try_get",
+   "location": "crates/aira-core/src/seed.rs:123-141,190-223,262-267; crates/aira-daemon/src/main.rs:85-98; crates/aira-ffi/src/runtime.rs:56-66; crates/aira-gui/src/keychain.rs:170-177",
+   "fix": "M19a: generate() -> (Zeroizing<String>, Self), generate_phrase_only() -> Zeroizing<String>, bip39_decode -> Zeroizing<[u8;32]> с Zeroizing на bits/indices, rand_entropy -> Zeroizing. M19b: daemon Zeroizing<String> + env::remove_var(\"AIRA_SEED\"); ffi Zeroizing первой строкой new() и параметр как bytes/ByteArray (Kotlin String нельзя затереть) + Android Keystore; gui try_get -> Option<Zeroizing<String>>",
+   "milestone": "M19a"
+  },
+  {
+   "severity": "MEDIUM",
+   "title": "derive(Debug) на типах с секретами: RatchetSnapshot (все ключи сессии), SenderKeyState/SenderKeyReceiver (+Clone), SyncItem::RatchetState, GroupControl (sender keys)",
+   "location": "crates/aira-core/src/ratchet.rs:125; group.rs:54,128; sync.rs:30-80; group_proto.rs:73-120",
+   "fix": "Ручной impl Debug с \"[REDACTED]\" для секретных полей (как уже сделано в aira-gui для GuiCommand/OnboardingState и в reality.rs для RealityConfig); GroupControl печатает длины, не байты; убрать Clone у SenderKeyReceiver или обосновать",
+   "milestone": "M19a"
+  },
+  {
+   "severity": "MEDIUM",
+   "title": "group.rs: message keys и skipped_keys plain, нет Drop с zeroize; nonce группового сообщения берётся с провода вместо локальной деривации",
+   "location": "crates/aira-core/src/group.rs:128-137, 201, 212-216",
+   "fix": "skipped_keys: HashMap<u64, Zeroizing<[u8;32]>> (nonce детерминирован derive_nonce(msg_key,counter), хранить не нужно), chain_ratchet -> (Zeroizing, Zeroizing), impl Drop/ZeroizeOnDrop; в decrypt выводить nonce локально и не доверять полю с провода (войдёт в wire v2)",
+   "milestone": "M19a"
+  },
+  {
+   "severity": "MEDIUM",
+   "title": "unsafe без // SAFETY: в aira-gui (4 из 6 мест) для зануления String — заменимо на zeroize::Zeroize for String; единственный unsafe в aira-net (from_utf8_unchecked) тоже заменим",
+   "location": "crates/aira-gui/src/onboarding.rs:103; state.rs:78,82,86; views/settings.rs:462-468; views/unlock.rs:112-113; crates/aira-net/src/discovery.rs:181-182",
+   "fix": "s.zeroize() во всех пяти местах gui; в discovery собирать String через push(char) или String::from_utf8(out)?; затем #![forbid(unsafe_code)] во всех крейтах / [workspace.lints.rust] unsafe_code = \"deny\" (M23) — spec/01-overview.md:18 «100% safe Rust» станет буквально верным",
+   "milestone": "M19b"
+  },
+  {
+   "severity": "MEDIUM",
+   "title": "Keychain GUI: let _ = delete_account/clear_all/delete_seed_phrase — seed может остаться в OS keychain после Reset identity или включения пароля; load_seed предпочитает vault → блокировка старым паролем",
+   "location": "crates/aira-gui/src/keychain.rs:107-136 (:110, :134); crates/aira-gui/src/ipc.rs:755,796; load_seed :74-100",
+   "fix": "Удалять до записи нового и пробрасывать ошибку в UI (GuiUpdate::KeychainUnavailable); после reset верифицировать load_seed() == None; тест «delete падает» в keychain-тестах (сейчас #[ignore]); учесть при замене keyring mock на platform features",
+   "milestone": "M19b"
+  },
+  {
+   "severity": "MEDIUM",
+   "title": "Нулевой hardening прав: ~/.aira, aira.redb (с plaintext pending_messages), downloads, backup-файл и Unix-сокет создаются по umask — 0 вызовов set_permissions/mode() в workspace",
+   "location": "crates/aira-daemon/src/main.rs:107-110,130-131; crates/aira-daemon/src/ipc.rs:76-83; crates/aira-storage/src/backup.rs:114; crates/aira-storage/src/lib.rs:140",
+   "fix": "DirBuilder mode(0o700) для ~/.aira и downloads, OpenOptions mode(0o600) / set_permissions для .redb и backup, set_permissions(socket, 0o600) сразу после bind (в дополнение к SO_PEERCRED из M19b п.3); тест stat на Unix; расширить п.3 M19b",
+   "milestone": "M19b"
+  },
+  {
+   "severity": "MEDIUM",
+   "title": "obfs/mimicry: chunk_len as u16 при 65 536 байт даёт заголовок длины 0 → обрыв соединения (obfs отклоняет len==0) или десинхронизация (mimicry) на любой записи ≥ 64 KiB; partial length header в obfs теряет байты",
+   "location": "crates/aira-net/src/transport/obfs.rs:273-276, 327-332 (MAX_FRAME_PAYLOAD=65_536 :34); mimicry.rs:417-422 (:27)",
+   "fix": "MAX_FRAME_PAYLOAD = 65_535 (как reality.rs:840 .min(u16::MAX)); буферизовать хвост заголовка как MimicryPendingFrame::PayloadLen; тест на запись 65 536 байт через оба транспорта",
+   "milestone": "M19"
+  },
+  {
+   "severity": "LOW",
+   "title": "Линт-гэп: deny(clippy::unwrap_used) только в aira-core, нет [workspace.lints]; 9 expect() на константах мешают включить expect_used",
+   "location": "crates/*/src/lib.rs (aira-core/src/lib.rs:25 единственный deny); Cargo.toml (нет [workspace.lints]); aira-net/src/ratelimit.rs:29,34; transport/tor.rs:74; aira-gui/src/ipc.rs:651, main.rs:68,116,119, tray.rs:81; aira-core/src/i18n.rs:179",
+   "fix": "[workspace.lints.clippy] unwrap_used/panic/unimplemented/todo = deny, expect_used/indexing_slicing = warn + [lints] workspace = true во всех крейтах с cfg_attr(test, allow); expect на константах → const/SocketAddr::from/let-else; делать после отката diff владельца в Cargo.toml (M18)",
+   "milestone": "M23"
+  },
+  {
+   "severity": "LOW",
+   "title": "relay: неограниченное число mailbox'ов, Ack.counters без cap (O(n·m)), Retrieve отдаёт до 100×64 KB одним ответом — больше MAX_FRAME_SIZE 256 KB",
+   "location": "crates/aira-net/src/relay.rs:231, 265-297; crates/aira-net/src/connection.rs:22,29-38",
+   "fix": "max_mailboxes (глобально и per-owner/IP), counters.len() ≤ max_envelopes, Retrieve с limit/cursor под MAX_FRAME_SIZE; общий cap 1 GB и auth уже в плане M21; KEY_CONTEXTS.md: aira/relay/mailbox/v2/<dir>, v1 deprecated",
+   "milestone": "M21"
+  },
+  {
+   "severity": "LOW",
+   "title": "let _ = на значимых Result: auto-accept invite, pending::enqueue при fan-out/файле, GC TTL и dedup в ffi (TTL-сообщения могут не удаляться без сигнала)",
+   "location": "crates/aira-daemon/src/handler.rs:470,739,909; crates/aira-ffi/src/runtime.rs:85,108,115",
+   "fix": "tracing::warn! + счётчик ошибок в DaemonEvent; :739 исчезает вместе с S1",
+   "milestone": "M19"
+  },
+  {
+   "severity": "LOW",
+   "title": "Invite-URI: без лимита длины, base64url принимает неканонические хвостовые биты и длины (много строковых представлений одной ссылки)",
+   "location": "crates/aira-net/src/discovery.rs:53-61, 185-211",
+   "fix": "cap 4 KB на URI, отклонять ненулевые хвостовые биты и недопустимые длины, проверять pseudonym_pk.len()/endpoint_addr_bytes.len() после декодирования; fuzz from_uri (п.4 QR/invite)",
+   "milestone": "M19b"
+  },
+  {
+   "severity": "LOW",
+   "title": "now_secs + ttl без saturating — ttl из IPC/FFI (u64::MAX → паника в debug / wrap в release → немедленное удаление)",
+   "location": "crates/aira-storage/src/messages.rs:123",
+   "fix": "saturating_add + верхняя граница TTL (≤ 365 дней) на границе IPC/FFI set_ttl",
+   "milestone": "M19"
+  },
+  {
+   "severity": "LOW",
+   "title": "15+ парсеров внешних данных без fuzz при 2 таргетах (handshake, ratchet decrypt, group_proto + handle_incoming_group_control, sync, RatchetSnapshot, invite-URI, RelayRequest/Response, DaemonRequest IPC, backup import, per-table decode, obfs/mimicry/reality кадры, BIP-39, TransportMode, unpad)",
+   "location": "crates/aira-core/fuzz/fuzz_targets/ (только fuzz_parse_message.rs, fuzz_decode_keys.rs); список в §8 отчёта",
+   "fix": "Минимум к релизу: handshake, ratchet decrypt (wire v2), group_proto, sync, RelayRequest, DaemonRequest, backup import, invite-URI — fuzz_target! без паники + cargo fuzz smoke в CI (M23)",
+   "milestone": "M19a"
+  }
+ ],
+ "blockers": [
+  "Новых безусловных релиз-блокеров не найдено; блокеры фаз 1–2 (демон без сети §4.1a, iroh 1.1 до 30.09, протокол v1 C1–C7, keyring mock, APK) остаются в силе.",
+  "Условный блокер: S1 — входящие GroupControl без авторизации (crates/aira-daemon/src/handler.rs:688-819: auto-accept :737-739, перезапись чужих sender_chain_key через AddMember.sender_keys :764-768, нулевое дополнение ключа :711-712/:766-767/:811-813, отсутствие ветки PlainPayload::GroupMessage :631-672). Становится блокером релиза, если групповые чаты входят в 1.0 (решение — задание E); должен быть закрыт в M19 Phase B до подключения приёма групп к сети."
+ ],
+ "plan_changes": [
+  "M18: добавить пункт «после отката Cargo.toml/Cargo.lock убедиться, что ml-kem/ml-dsa остаются с feature zeroize (root Cargo.toml:28-29) и x25519-dalek с default zeroize (cargo tree -i zeroize); проверить cargo tree -d -i rand — при появлении rand 0.9 из iroh 1.1 не смешивать rand_core в crypto/rustcrypto.rs:59-63».",
+  "M19a: добавить пункт «Zeroize seed-материала в aira-core/src/seed.rs:123-141,190-223,262-267 — generate() -> (Zeroizing<String>, Self), generate_phrase_only() -> Zeroizing<String>, bip39_decode -> Zeroizing<[u8;32]>, rand_entropy -> Zeroizing; ручной Debug с [REDACTED] для RatchetSnapshot (ratchet.rs:125), SenderKeyState/SenderKeyReceiver (group.rs:54,128), SyncItem (sync.rs:30-80), GroupControl (group_proto.rs:73-120); group.rs:136 skipped_keys и :212-216 chain_ratchet в Zeroizing + impl Drop, nonce группового сообщения выводить локально (:201); device.rs:186-190,214-216 буферы в Zeroizing; KEY_CONTEXTS.md — aira/device/id-from-code (перенести деривацию из handler.rs:200 в aira-core::device) и примечание к aira/reality/session/0; в список fuzz добавить sync, BIP-39 from_phrase, unpad_message; все новые сравнения транскриптов (SIGMA-binding, AAD) — через subtle::ct_eq».",
+  "M19 Phase A: добавить «messages.rs:123 saturating_add + cap TTL на границе IPC/FFI; backup v2 — лимит размера импорта и Zeroizing на расшифрованный блоб (backup.rs:128-150); fuzz backup::import и per-table decode».",
+  "M19 Phase B: добавить пункт «Авторизация входящих GroupControl (handler.rs:688-819) ДО подключения приёма групп: CreateGroup → только событие GroupInviteReceived без записи в БД и без auto-accept (:737-739), cap members ≤ MAX_GROUP_MEMBERS; AddMember/RemoveMember требуют role == Admin у sender_pubkey; sender_keys принимать только для new_member (:764-768); все sender-key поля ровно 32 байта (:711-712,:766-767,:811-813); добавить ветку PlainPayload::GroupMessage в handle_incoming_payload (:631-672); blobs.rs:86,103 — хранить TempTag в TransferManager вместо mem::forget; warn! вместо let _ = на enqueue (handler.rs:470,909); если obfs/mimicry подключаются здесь — MAX_FRAME_PAYLOAD = 65_535 (obfs.rs:34, mimicry.rs:27) и буферизация partial header (obfs.rs:273-276)».",
+  "M19 Phase C: добавить тесты «AddMember от Member отклонён», «чужой pk в sender_keys игнорируется», «CreateGroup без accept не создаёт группу», «sender key 31 байт отклонён», «запись 65 536 байт через obfs/mimicry», «SetTtl u64::MAX».",
+  "M19b п.3 (IPC-аутентификация): расширить правами на файлы — ~/.aira 0700 (main.rs:107-108), aira.redb и backup 0600 (lib.rs:140, backup.rs:114), сокет set_permissions 0600 после bind (ipc.rs:83), downloads 0700 (main.rs:130-131); тест stat на Unix.",
+  "M19b п.5 (Android FFI seed): уточнить — Zeroizing первой строкой AiraRuntime::new (runtime.rs:56-66), параметр seed как bytes/ByteArray вместо String (Kotlin String нельзя затереть), провижининг через Android Keystore; runtime.rs:85,108,115 — warn! вместо let _ = на GC; set_event_listener (:137-158) отменять предыдущую forwarding-задачу.",
+  "M19b: добавить пункты «aira-gui unsafe → String::zeroize() (onboarding.rs:103, state.rs:78,82,86, views/settings.rs:462-468, views/unlock.rs:112-113), discovery.rs:181-182 → safe, затем forbid(unsafe_code) во всех крейтах»; «keychain.rs:107-136 — delete до write и проброс ошибок в UI, ipc.rs:755,796 — ошибку в UI, верификация load_seed()==None после reset, тест delete-падает»; «daemon main.rs:85-98 — Zeroizing<String> + env::remove_var до отказа от env-транспорта; keychain try_get -> Option<Zeroizing<String>>»; в п.4 (QR/invite): cap URI 4 KB, канонический base64url, проверка длин полей InvitationLink, fuzz from_uri; fuzz DaemonRequest и TransportMode::from_str.",
+  "M21: добавить в дизайн mailbox v2 — max_mailboxes (глобально и per-owner/IP), Ack.counters.len() ≤ max_envelopes (relay.rs:281-291), Retrieve с limit/cursor так, чтобы ответ помещался в MAX_FRAME_SIZE 256 KB (connection.rs:22; сейчас до 6.4 MB одним RelayResponse); KEY_CONTEXTS.md — aira/relay/mailbox/v2/<dir>, v1 deprecated; fuzz RelayResponse для клиента.",
+  "M22: добавить пункт-решение «REALITY (reality.rs): переработать (per-session key из psk‖client_nonce‖server_nonce под aira/reality/session/1, MAC ответа сервера, кэш client-nonce, short_id внутри TLS ClientHello, обязательный fallback, тесты на replay и различие keystream) ИЛИ исключить reality/obfs4/mimicry/cdn/tor из релизных сборок и пометить spec/13-threat-model.md:160-215 «экспериментально, не в 1.0»»; contact-request gate перед CreateGroup от незнакомцев (связка с S1); obfs/mimicry framing, если не сделано в M19.",
+  "M23: добавить «[workspace.lints.clippy] unwrap_used/panic/unimplemented/todo = deny, expect_used/indexing_slicing = warn, [workspace.lints.rust] unsafe_code = deny + [lints] workspace = true во всех крейтах (после отката diff владельца в Cargo.toml); 9 expect() на константах → const/let-else; cargo fuzz smoke в CI; проверка релизной сборки aira-net без reality/obfs4/mimicry/cdn/tor; default-фильтр логов info»."
+ ],
+ "open_questions": [
+  "REALITY (S2): переработать до 1.0 (M22) или исключить из релизных сборок и пометить spec/13 экспериментальным? Транспорты уже не в default features и не подключены к iroh — рекомендуется исключить и вернуться после релиза.",
+  "Входят ли групповые чаты в 1.0 (задание E)? От этого зависит статус S1 (HIGH → релиз-блокер) и объём M19 Phase B по авторизации GroupControl и ветке приёма GroupMessage.",
+  "Политика Debug для секретных типов: принять правило «ручной impl Debug с [REDACTED] обязателен для любого типа с ключом/фразой» в rules/security.md (как уже сделано в aira-gui) и проверять его в code review?",
+  "Workspace-линты (S10): вводить в M23 или раньше (M18, сразу после отката незакоммиченного Cargo.toml владельца), пока кодовая база ещё маленькая?",
+  "Форма передачи seed через FFI на Android: оставить String (нельзя затереть на стороне Kotlin) или перейти на ByteArray + Android Keystore-обёртку в M19b — влияет на Kotlin-API и провижининг.",
+  "Права на файлы на Unix (S8): достаточно chmod 0600/0700 через std, или требовать XDG_RUNTIME_DIR для сокета и явную проверку владельца каталога ~/.aira при старте демона?",
+  "Backup v2 (M19 Phase A): вводить лимит размера импорта (например, 1 GiB) и Zeroizing расшифрованного блоба, или переходить на потоковый формат?"
+ ]
+}

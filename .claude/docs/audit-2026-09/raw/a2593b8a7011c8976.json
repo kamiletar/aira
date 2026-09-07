@@ -1,0 +1,123 @@
+{
+ "file_written": "C:\\web\\aira\\.claude\\docs\\audit-2026-09\\test-coverage-audit.md",
+ "summary": "В workspace 500 тест-функций (core 130, net 104, storage 84, daemon 53, cli 69, gui 40, ffi 9, bot 11), но 65 из них (13 %) никогда не выполняются в CI: 45 тестов DPI-транспортов (obfs/mimicry/REALITY/fingerprint/tor/cdn за feature-гейтами при `default = []`) и 17 тестов крипто-бэкендов aws-lc (`fips`/`compat-test`) — потому что `ci.yml:53` запускает `cargo test --workspace` без `--all-features`, вопреки spec §17; ещё 3 keychain-теста под `#[ignore]`. Из четырёх обязательных требований `rules/testing.md` полностью выполнено одно (unit-тесты): детерминизм «seed → одинаковые ключи на разных машинах» нигде не доказан — все тесты сравнивают два вызова в одном процессе, ни одного known-answer-вектора (фиксированная фраза/seed → ожидаемый hex VK/EK/contact_id), поэтому M18 шаг 0 (снапшот с тега v0.3.5) — единственная защита адресов пользователей; при этом проверено, что с тега v0.3.5 исходники не менялись (6 docs-коммитов), т.е. векторы можно снять в worktree тега. Сквозного теста на уровне демона нет и он структурно невозможен: `ipc.rs` подключён как `mod ipc` в бинарнике (`main.rs:26`), `start_ipc_server` не экспортируется из lib, каталога `crates/aira-daemon/tests` нет; `tests/two_node_chat.rs` доказывает лишь QUIC+ALPN+фрейминг+канал ChatHandler с поддельным ciphertext, без handshake/ratchet/storage/IPC. Фаззинг фактически отсутствует: из двух таргетов `fuzz_parse_message.rs` не компилируется (использует `postcard`, которого нет в `fuzz/Cargo.toml`), корпуса нет; `proptest` объявлен в dev-deps и ни разу не использован. Хорошая новость: тесты aira-net не зависят от публичных relay n0 (`bind_for_test` → `Endpoint::empty_builder()` = `RelayMode::Disabled` в iroh 0.97), после 30.09.2026 они не сломаются, но production `bind()` с `presets::N0` не покрыт вообще. Хрупкость к релизному пути предсказуема: M18 ломает компиляцию всего aira-net (и всех зависимых крейтов) через `empty_builder`; M19 удаляет `Platform::Mobile`, на котором сидят 5 тестовых модулей (без дешёвого конструктора seed каждый тест получит 256 MB Argon2); M19a меняет `Message`/`EncryptedEnvelope` (~20 тестов net + оба fuzz-таргета) и семантику `capability_negotiation_intersection`/spam-тестов; M19b-валидация длины pubkey сломает 54 литерала `vec![0x..; 32]`. Найдены также слабые/флаки-тесты (таймерный `test_relay_gc_ttl`, sleep в FFI, тавтологические `kem_invalid_ciphertext_rejected` и `locate_returns_err_when_missing`, 29 IPC-roundtrip без golden-байтов), утечка temp-каталогов и двойной Argon2 256 MB в каждом FFI-тесте. В отчёте: матрица покрытия по крейтам (§1), 20 парсеров внешних данных с предложенными fuzz-таргетами и схемой CI (§3), 15 proptest-свойств (§4), списки тестов, ломаемых M18/M19a/M19 (§5), правки CI (§6) и задачи по милстоунам с составом фикстур `v0_3_5.json` и storage-фикстур v1 (§7).",
+ "top_findings": [
+  {
+   "severity": "HIGH",
+   "title": "CI не запускает 62 feature-gated теста (весь DPI-транспорт и крипто-бэкенды aws-lc)",
+   "location": ".github/workflows/ci.yml:53; crates/aira-net/src/transport/mod.rs:28-39; crates/aira-net/Cargo.toml (default = []); crates/aira-core/src/crypto/mod.rs:9-13",
+   "fix": "`cargo test --workspace --all-features --locked` (spec §17 требует --all-features); clippy тоже с --all-features; ожидать первые падения transport-тестов — они никогда не бежали",
+   "milestone": "M18"
+  },
+  {
+   "severity": "HIGH",
+   "title": "Fuzz-таргет fuzz_parse_message не компилируется, фаззинг не запускался ни разу",
+   "location": "crates/aira-core/fuzz/Cargo.toml:9-11 (нет postcard); crates/aira-core/fuzz/fuzz_targets/fuzz_parse_message.rs:14-16; .gitignore:9-11 (паттерны привязаны к корню)",
+   "fix": "Добавить postcard = \"1\", arbitrary с derive, [profile.release] debug = 1; .gitignore → **/fuzz/target/, **/fuzz/artifacts/; закоммитить seed-корпус; CI-джоб `cargo fuzz build` на PR и 60 с/таргет на main (nightly, ubuntu); регрессия по корпусу как обычный #[test] на stable",
+   "milestone": "M18"
+  },
+  {
+   "severity": "HIGH",
+   "title": "Детерминизм seed→ключи не доказан: ни одного known-answer-вектора",
+   "location": "crates/aira-core/src/seed.rs:502-512; identity.rs:123; crypto/rustcrypto.rs:129-145,175; storage/types.rs:190",
+   "fix": "crates/aira-core/tests/vectors/v0_3_5.json (identity_vk 1952 B, sig 3309 B, kem ek/dk 1184/2400 B, decaps(dk, ct_fixed), derive(aira/identity/0|storage/0|mlkem/0) для фразы abandon×23 art с Desktop-профилем, pseudonym_vk_0, contact_id, combine_secrets, link_code, ratchet-снапшот с pq_enabled) + tests/vectors.rs; снимать в worktree тега v0.3.5 (исходники с тега не менялись — проверено)",
+   "milestone": "M18"
+  },
+  {
+   "severity": "HIGH",
+   "title": "Сквозной тест уровня демона невозможен: IPC-сервер живёт в бинарнике",
+   "location": "crates/aira-daemon/src/main.rs:26 (mod ipc); crates/aira-daemon/src/lib.rs:21-24; crates/aira-daemon/src/ipc.rs:67,165 (start_ipc_server); каталога crates/aira-daemon/tests нет",
+   "fix": "Вынести ipc.rs в lib (aira_daemon::ipc или крейт aira-node из §14.0) с тестовым транспортом; затем crates/aira-daemon/tests/two_daemons.rs по M19 п.15-16 с MasterSeed::from_raw и bind_for_test",
+   "milestone": "M19"
+  },
+  {
+   "severity": "MEDIUM",
+   "title": "Серверный парсер IPC read_message не вызывается ни одним тестом; HandshakeHandler::accept и production bind() без тестов",
+   "location": "crates/aira-daemon/src/ipc.rs:18-30 (тесты :262-323 вызывают только write_*); crates/aira-net/src/protocol.rs:129+; crates/aira-net/src/endpoint.rs:80",
+   "fix": "Unit-тест read_message через Cursor (валидный кадр, len > 1 MiB → Err, обрыв); тест HandshakeHandler через build_router + reply_tx; после M20 — unit-тест AiraPreset",
+   "milestone": "M19"
+  },
+  {
+   "severity": "MEDIUM",
+   "title": "5 тестовых модулей зависят от Platform::Mobile, который M19 удаляет; нет дешёвого тестового seed",
+   "location": "crates/aira-core/src/handshake.rs:363; identity.rs:118; kem.rs:163,193; crates/aira-daemon/src/handler.rs:964; crates/aira-ffi/src/runtime.rs:412-418,65 (два Argon2 256 MB на тест ×9)",
+   "fix": "`MasterSeed::from_raw([u8;32])` под #[cfg(any(test, feature = \"test-utils\"))] в seed.rs (рядом с test_helpers :321); использовать в core/daemon/ffi тестах и fuzz; в FFI держать TempDir в фикстуре (сейчас дропается до закрытия redb)",
+   "milestone": "M18"
+  },
+  {
+   "severity": "MEDIUM",
+   "title": "Изменения M19a/M19 Phase A ломают ~40 тестов без фикстур для миграции",
+   "location": "proto.rs Message::Encrypted → protocol.rs:232, two_node_chat.rs:16,93, relay.rs 9 тестов + relay_offline.rs; handshake.rs:423 capability_negotiation_intersection (v1∩v2 = Ok при политике v2-only); spam.rs:203-240; ratchet.rs:672 (после AAD перестаёт тестировать MAX_SKIP); ContactInfo литералы (7 мест); backup.rs VERSION",
+   "fix": "До правок схемы сгенерировать фикстуры crates/aira-storage/tests/fixtures/aira-v1.redb и backup-v1.aira.enc (ключ [0x42;32]); golden-байты wire v2 (tests/vectors/wire_v2/*.bin); переписать перечисленные тесты вместе с изменениями",
+   "milestone": "M19a"
+  },
+  {
+   "severity": "MEDIUM",
+   "title": "Нет golden-byte тестов ни для одного wire/IPC/storage формата",
+   "location": "crates/aira-daemon/src/types.rs:396-856 (29 roundtrip через serde-derive); crates/aira-core/src/proto.rs (0 тестов); group_proto.rs:171-300",
+   "fix": "Для каждого типа один `assert_eq!(to_allocvec(&fixture), include_bytes!(...))` + proptest roundtrip с Arbitrary; иначе перестановка вариантов enum ломает совместимость молча",
+   "milestone": "M19a"
+  },
+  {
+   "severity": "MEDIUM",
+   "title": "Валидация длины pubkey (M19b п.4) сломает 54 фейковых 32-байтных pubkey в тестах daemon/ffi/gui/cli/bot",
+   "location": "grep vec![0x..; 32] по crates/aira-daemon, aira-ffi, aira-gui, aira-cli, aira-bot — 54 вхождения; storage b\"pk-...-32-bytes\"",
+   "fix": "Хелпер test_pubkey(tag) -> Vec<u8> (1952 байта) в aira-core test-utils и замена литералов одновременно с валидацией",
+   "milestone": "M19b"
+  },
+  {
+   "severity": "MEDIUM",
+   "title": "Таймерные и слабые тесты",
+   "location": "crates/aira-net/src/relay.rs:643-670 (реальный sleep 150 ms при ttl 50/gc 30); crates/aira-ffi/src/runtime.rs:576 (thread::sleep 100 ms); crypto/rustcrypto.rs:195 (let _ = без assert); gui/daemon_manager.rs:238 (Ok и Err оба проходят)",
+   "fix": "start_paused + time::advance; Notify/канал вместо sleep; переписать kem_invalid_ciphertext_rejected как M18 п.7(г) (CT 1087/1089 → Err); locate-тест разделить на две среды",
+   "milestone": "M18"
+  },
+  {
+   "severity": "MEDIUM",
+   "title": "obfs frame decoder теряет байт при разрыве 2-байтного заголовка кадра между чтениями; тесты не покрывают (duplex 8 KB/256 KB)",
+   "location": "crates/aira-net/src/transport/obfs.rs:270-275 (комментарий «we just skip this byte»); тесты obfs.rs:374-440 через tokio::io::duplex целиком",
+   "fix": "Proptest «payload × произвольные write-чанки × read-буферы через duplex(64) → received == sent» для obfs/mimicry/REALITY; починить буферизацию частичного заголовка; feature-gated код — не в релизном пути, но тест дешёвый",
+   "milestone": "new"
+  },
+  {
+   "severity": "LOW",
+   "title": "safety.rs (safety_number) — 0 тестов; cli/src/ipc.rs — 0; MAX_ENVELOPE_SIZE в ratchet decrypt не проверяется; sessions-тесты не используют настоящий RatchetSnapshot",
+   "location": "crates/aira-core/src/safety.rs:30-40; crates/aira-core/src/ratchet.rs:323; crates/aira-storage/src/sessions.rs:95-160 (b\"ratchet-snapshot\")",
+   "fix": "Тесты формата/симметрии safety_number (решить, симметрична ли к порядку ключей); тест decrypt с ciphertext 65 537 B → Err; sessions save/load настоящего to_snapshot()",
+   "milestone": "M19a"
+  },
+  {
+   "severity": "LOW",
+   "title": "Документация и мелочи: неверный комментарий про relay в тестах, имена fuzz-таргетов в правилах, утечка temp-каталогов, пустой crates/aira-gui/tests",
+   "location": "crates/aira-net/src/endpoint.rs:53 (empty_builder = RelayMode::Disabled, не default relay); .claude/rules/testing.md:60,83-84 (parse_message/parse_group_message не существуют); storage/lib.rs:182-186 и daemon/handler.rs:970-974 (temp_dir без удаления); crates/aira-gui/tests пуст",
+   "fix": "Поправить комментарий и правила; tempfile::TempDir в фикстурах; удалить пустой каталог",
+   "milestone": "M18"
+  }
+ ],
+ "blockers": [
+  "Прямых релиз-блокеров, не известных из фаз 1–2, нет; но без снапшот-векторов v0.3.5 (crates/aira-core/tests/vectors/v0_3_5.json — сейчас отсутствует; все тесты детерминизма сравнивают два вызова в одном процессе: seed.rs:502-512, identity.rs:123, rustcrypto.rs:129-145) миграция M18 не сможет доказать сохранность адресов пользователей — это условие спеки M18 шаг 0 («расхождение VK = релиз-блокер»).",
+  "Fuzz-таргет crates/aira-core/fuzz/fuzz_targets/fuzz_parse_message.rs:14-16 не компилируется (нет postcard в fuzz/Cargo.toml:9-11) — требование rules/testing.md «fuzz для всех парсеров» и M19a п.7 «cargo fuzz в CI» невыполнимы до починки.",
+  "Двухдемонный тест M19 Phase C п.15 невозможен без выноса ipc.rs из бинарника (crates/aira-daemon/src/main.rs:26 `mod ipc`, lib.rs:21-24 без ipc) — зависимость, не учтённая в плане M19."
+ ],
+ "plan_changes": [
+  "M18 п.1 (шаг 0): расширить состав v0_3_5.json — кроме VK/подписи/EK/DK и derive(aira/identity/0): derive(aira/storage/0), derive(aira/mlkem/0) для фиксированной фразы с Desktop-профилем, decaps(dk, ct_fixed) == ss_fixed (encaps недетерминирован), pseudonym_vk_0, contact_id(VK), combine_secrets на фиксированных входах (фиксирует контекст v1 и BE-counter), link_code, postcard-снапшот сессии с pq_enabled = true (для теста «2400-байтный DK читается»). Добавить: с тега v0.3.5 исходники не менялись (только docs) — векторы снимать в worktree тега; рабочая копия не собирается.",
+  "M18 п.3: после замены empty_builder исправить комментарий endpoint.rs:53 (тесты идут с RelayMode::Disabled, не через relay n0); зафиксировать, что presets::Minimal в тестах не должен включать relay/discovery (проверить по docs iroh 1.1).",
+  "M18 п.7: добавить (ж) починка crates/aira-core/fuzz (postcard, arbitrary, .gitignore, seed-корпус) и CI-джоб `cargo fuzz build`; (з) `MasterSeed::from_raw` под cfg(test)/feature test-utils для замены Platform::Mobile в тестах и для fuzz handshake; (и) переписать kem_invalid_ciphertext_rejected с реальным assert.",
+  "M18 п.8 (CI): `cargo test --workspace --all-features --locked` и clippy с --all-features — впервые запустит 45 transport-тестов и 17 крипто-тестов; результат неизвестен, закладывать время на починку.",
+  "M19a п.7: конкретизировать fuzz-таргеты (fuzz_wire_message, fuzz_handshake с Arbitrary-структурами, fuzz_ratchet_decrypt с инвариантом «состояние не изменилось при Err», fuzz_ratchet_snapshot, fuzz_sync_batch, fuzz_group_decrypt, fuzz_contact_request; новый crates/aira-net/fuzz: fuzz_invitation_link, fuzz_relay_request, fuzz_framing после перевода read_framed на generic AsyncRead); proptest: padding, bip39-кодек, roundtrip всех wire-типов + golden-байты wire_v2/*.bin, ratchet state-machine с pq_enabled, KEM 16 кейсов, лимиты размеров, base64url. Переписать capability_negotiation_intersection под min = max = 2.",
+  "M19 Phase A: добавить п.0 «фикстуры до миграции» — crates/aira-storage/tests/fixtures/aira-v1.redb и backup-v1.aira.enc (ключ [0x42;32]) генерируются на v0.3.5 до правок ContactInfo/backup VERSION; тесты open_v1_migrates_to_v2, import_v1_backup_restores_counter; sessions-тест с настоящим RatchetSnapshot; pending QueueFull.",
+  "M19 Phase B/C: добавить предпосылку «ipc.rs → библиотека (aira_daemon::ipc или aira-node) с тестовым транспортом» перед two_daemons.rs; unit-тесты read_message (len > 1 MiB), HandshakeHandler::accept, ConnectionManager::set_connected/disconnected; FFI-тесты без двойного Argon2 и с TempDir в фикстуре.",
+  "M19b п.1: явно — снять #[ignore] с keychain.rs:189,209,221 в Windows/macOS-джобах CI; п.4: хелпер test_pubkey (1952 B) и замена 54 фейковых 32-байтных pubkey в тестах вместе с валидацией.",
+  "M20 п.6: unit-тест AiraPreset (relay map = свой URL, n0 fallback off) и fuzz/proptest парсинга [network] TOML.",
+  "M21 п.8: fuzz RelayRequest v2 и proptest кодека размещать в crates/aira-relay/fuzz и tests; удалить relay.rs v1-тесты и relay_offline.rs.",
+  "M22/M23 п.1: CI-матрица ubuntu/windows/macos × stable + msrv-джоб (1.91) + fuzz (60 с/таргет) + coverage (cargo llvm-cov, порог для aira-core после первого замера) как блокирующие; cargo test в release.yml перед публикацией."
+ ],
+ "open_questions": [
+  "Тестовый seed без Argon2: добавить `MasterSeed::from_raw([u8;32])` под cfg(test)/feature test-utils (рекомендуется) или оставить Platform::Mobile только для тестов вопреки решению №4 об удалении?",
+  "Корпус фаззинга: коммитить seed-корпус в репозиторий (рекомендуется, + регрессионный #[test] по корпусу на stable/Windows) или держать только в CI-артефактах?",
+  "CI-матрица ОС: готов ли владелец оплачивать/ждать Windows+macOS раннеры на каждый PR (GitHub Free для публичных репо — бесплатно, но в 2–10 раз медленнее) — или только на main/тегах?",
+  "Transport-тесты (45, за features) впервые побегут в CI после --all-features: если они красные, чинить в M18 или временно исключить features из CI до пост-релизных милстоунов (DPI не в релизном пути)?",
+  "safety_number: должна ли быть симметричной к порядку ключей (safety.rs:39-40 конкатенирует first‖second) — зависит от того, показывает ли UI один и тот же номер обеим сторонам; определяет формат теста/вектора.",
+  "aira-ffi даёт заметную часть покрытия handler.rs (AddContact/SendMessage/GetHistory/группы через handle_request): если Android уйдёт в preview и aira-ffi выйдет из workspace/CI, нужны ли дублирующие тесты в aira-daemon?"
+ ]
+}

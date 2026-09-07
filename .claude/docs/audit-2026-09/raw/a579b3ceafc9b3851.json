@@ -1,0 +1,118 @@
+{
+ "file_written": "C:\\web\\aira\\.claude\\docs\\audit-2026-09\\net-audit.md",
+ "summary": "aira-net (5 851 строка) к реальному пути соединения не подключён: демон и FFI используют только blobs::BlobStore (in-memory, без сети) и TransportMode::from_str; endpoint/connection/protocol — рабочая автономная обвязка iroh с 7 сетевыми тестами на loopback (empty_builder без relay — от n0 не зависит), relay.rs — mailbox v1 без аутентификации, ratelimit/ConnectionManager/PeerTier/DeviceRecord — мёртвый код. transport/* (3 722 строки, 64 % крейта) — шесть реализаций поверх tokio::io::duplex, которые не могут быть встроены в iroh (QUIC/UDP, а не байтовые потоки), выключены фичами в daemon/ffi, не собираются в CI с апреля и криптографически несостоятельны (obfs без секрета, «REALITY» с открытым 8-байтным префиксом и статическим ключом, dead-code Session-ID, mimicry с length-prefix перед фейковым заголовком, CDN/Tor — заглушки); при этом GUI/CLI позволяют выбрать REALITY/Tor, а демон отвечает Ok. Миграция iroh 0.97→1.1 для aira-net сверена по исходникам 1.1.0: одна строка (endpoint.rs:78 empty_builder → builder(presets::Minimal)), ~30 остальных точек API и iroh-blobs 0.103 совпадают, вне aira-net iroh никто не использует — объём M18 вне крейта не ожидается. Главный дефект плана: M19 п.7 велит регистрировать Arc<RelayServer> в роутере клиента → каждый клиент беты становится открытым mailbox-relay с неограниченными 10-MB коробками по запросу любого EndpointId. Дополнительно: Retrieve v1 ломается при коробке > 256 KB (write_framed), поэтому fallback через aira/1/relay до M21 (M19 п.10) не сработает; файлы ≥ 1 MB идут через iroh-blobs открытым содержимым под классическим TLS iroh — PQ-обещание §11 на файлы не распространяется. Свой relay задать нельзя (presets::N0 зашит, bind() принимает только SecretKey) — нужны AiraPreset/NetConfig/bind_with и [network] в демоне (M20, ≈1,5 дня). Рекомендация: в 1.0 оставить только Direct, транспорты удалить (или в ветку experimental), DPI-история беты — iroh-relay по WSS:443 на своём домене.",
+ "blockers": [
+  "[план M19] spec/18-milestones.md:563-566 + crates/aira-net/src/protocol.rs:182-188, endpoint.rs:61, relay.rs:231 — build_router регистрирует Arc<RelayServer> на aira/1/relay без аутентификации; коробки создаются любым deposit без глобального cap → каждый клиент беты = открытый mailbox-relay, удалённое исчерпание памяти. Убрать RelayServer из build_router и ALPN RELAY из all_alpns в M19, не ждать M21.",
+  "[известный блокер №0, подтверждён] ни один символ AiraEndpoint/build_router/ChatHandler/RelayClient не используется вне aira-net (grep = 0); демон без сети."
+ ],
+ "top_findings": [
+  {
+   "severity": "BLOCKER",
+   "title": "M19 п.7 делает каждый клиент открытым mailbox-relay без auth",
+   "location": "crates/aira-net/src/protocol.rs:182-188; endpoint.rs:61; relay.rs:231; spec/18-milestones.md:563-566",
+   "fix": "build_router(&ep, chat, handshake, blobs) без Arc<RelayServer>; убрать ALPN RELAY из all_alpns; RelayServer не инстанцировать в клиенте",
+   "milestone": "M19"
+  },
+  {
+   "severity": "HIGH",
+   "title": "Retrieve v1 отдаёт всю коробку одним кадром; > 256 KB → стрим рвётся, коробка невыгружаема",
+   "location": "crates/aira-net/src/relay.rs:268-274; connection.rs:22,33-38",
+   "fix": "v1 из демона не использовать (M19 п.10 без fallback на aira/1/relay); в v2 — пагинация Retrieve{after_seq, limit}, ответ ≤ MAX_FRAME_SIZE",
+   "milestone": "M19 (план), M21"
+  },
+  {
+   "severity": "HIGH",
+   "title": "Файлы ≥ 1 MB через iroh-blobs открытым содержимым под классическим TLS iroh — не PQ-защищены, blob доступен любому с хэшем",
+   "location": "crates/aira-net/src/blobs.rs:74-79; protocol.rs:190-192",
+   "fix": "per-file ключ из ratchet (aira/file/key/v2), blob = ciphertext, ключ в FileStart; минимум — честная запись в THREAT_MODEL/PRIVACY (M23 п.3)",
+   "milestone": "M19a/M19"
+  },
+  {
+   "severity": "HIGH",
+   "title": "Пользователь может выбрать REALITY/obfs4/Tor в GUI/CLI, демон отвечает Ok и хранит режим, трафик не меняется",
+   "location": "crates/aira-daemon/src/handler.rs:835-848; aira-gui/src/views/settings.rs:50; aira-cli/src/main.rs:442",
+   "fix": "SetTransportMode ≠ direct → DaemonResponse::Error(\"not supported in this release\"); скрыть выбор транспорта в UI",
+   "milestone": "M19b"
+  },
+  {
+   "severity": "HIGH",
+   "title": "DPI-транспорты не встраиваемы в iroh, не собираются в CI, криптографически несостоятельны (obfs без секрета, REALITY с открытым префиксом и статическим ключом, mimicry с length-prefix перед заголовком, CDN/Tor заглушки)",
+   "location": "crates/aira-net/src/transport/{obfs.rs:77-116, reality.rs:336-346,561-590, mimicry.rs:424-430, cdn.rs:39-57, tor.rs:95-115}; Cargo.toml:27-49; .github/workflows/ci.yml:37,51",
+   "fix": "удалить модули, фичи, optional-deps (reqwest, rustls, tokio-rustls, webpki-roots, rcgen, tokio-socks), tests/dpi_simulator.rs; §11A → таблица статусов, §11A.6 → unstable-custom-transports; DPI-история беты = iroh-relay/WSS:443 (M20)",
+   "milestone": "M19b"
+  },
+  {
+   "severity": "MEDIUM",
+   "title": "Нет ни одного таймаута: connect, read_framed, RelayClient::request, ожидание ответа приложения на handshake",
+   "location": "crates/aira-net/src/endpoint.rs:115-124; connection.rs:51-72; relay.rs:361-380; protocol.rs:158",
+   "fix": "tokio::time::timeout 5 с / 30 с / 10 с; битый кадр не рвёт соединение",
+   "milestone": "M19"
+  },
+  {
+   "severity": "MEDIUM",
+   "title": "read_framed выделяет 256 KB по заголовку (128 стримов × 256 KB = 32 MB/соединение); лимиты §11B.3 не выставлены; соединений никто не ограничивает",
+   "location": "crates/aira-net/src/connection.rs:59-66; endpoint.rs:17-23,68-73",
+   "fix": "инкрементальное выделение; 16/32 стрима, окна 256/64 KB, idle 30 с; EndpointHooks iroh 1.1 для tiers",
+   "milestone": "M19 / M22"
+  },
+  {
+   "severity": "MEDIUM",
+   "title": "identity ↔ EndpointId не связаны: подпись handshake не покрывает EndpointId, IncomingMessage.from — только EndpointId",
+   "location": "crates/aira-core/src/handshake.rs:316-336; crates/aira-net/src/protocol.rs:26-31",
+   "fix": "EndpointId обеих сторон в подписываемые данные init/ack; в ChatHandler/net_task отбрасывать Encrypted от EndpointId без сессии до decrypt",
+   "milestone": "M19a/M19"
+  },
+  {
+   "severity": "MEDIUM",
+   "title": "Ack по ratchet-counter в одной коробке на два направления удаляет чужие конверты; коробки создаются любым deposit, cap 1 GB нет",
+   "location": "crates/aira-net/src/relay.rs:285-291, 231",
+   "fix": "закрыто дизайном v2 (две коробки, seq от relay, обязательный Register, cap)",
+   "milestone": "M21"
+  },
+  {
+   "severity": "MEDIUM",
+   "title": "ratelimit.rs / ConnectionManager / PeerTier — мёртвый код; лимитер не keyed",
+   "location": "crates/aira-net/src/ratelimit.rs:24-49; connection.rs:131-194",
+   "fix": "governor RateLimiter::keyed по EndpointId + tier из contacts через EndpointHooks; либо удалить",
+   "milestone": "M22"
+  },
+  {
+   "severity": "MEDIUM",
+   "title": "MemStore: файл целиком в память до 4 GiB, temp-теги forget → монотонный рост памяти демона; приёмной стороны файлов нет",
+   "location": "crates/aira-net/src/blobs.rs:70,86,103",
+   "fix": "FsStore::load + add_path, теги с освобождением; Downloader/remote().fetch по хэшу из FileStart; FileAck",
+   "milestone": "M19"
+  },
+  {
+   "severity": "LOW",
+   "title": "InvitationLink без версии/подписи/fingerprint/срока; endpoint_addr_bytes никем не заполняется; ≈2,8 KB как текст не влезает в QR; неканонический base64url; лишний unsafe",
+   "location": "crates/aira-net/src/discovery.rs:20-61,181-182,185-211",
+   "fix": "version, fingerprint_hint, expires_at, подпись pseudonym-ключом; QR в byte-mode; #![deny(unsafe_code)]; удалить DeviceRecord",
+   "milestone": "M19b"
+  },
+  {
+   "severity": "LOW",
+   "title": "Миграция iroh 0.97→1.1 для aira-net — 1 строка; вне aira-net iroh не используется",
+   "location": "crates/aira-net/src/endpoint.rs:78; Cargo.toml:27-28",
+   "fix": "Endpoint::builder(presets::Minimal); фичи tls-ring и др.; rust-version 1.91; поправить doc endpoint.rs:49-51 (relay в тестах нет); M18 п.3 «объём неизвестен» → «не ожидается»",
+   "milestone": "M18"
+  }
+ ],
+ "plan_changes": [
+  "M19 п.7 (spec/18-milestones.md:563-566): build_router(&ep, ChatHandler, HandshakeHandler, Some(&blob_store)) — БЕЗ Arc<RelayServer>; ALPN aira/1/relay убрать из all_alpns (endpoint.rs:61) сразу в M19.",
+  "M19 п.10 (:576-579): убрать «fallback — RelayClient::deposit в существующий aira/1/relay до M21»; до M21 только pending + прямая доставка, DeliveryState::Queued честно в UI.",
+  "M18 п.3 (:464-467): «объём выше неизвестен» → «вне aira-net iroh никто не использует, правок не ожидается»; предпосылка — откат незакоммиченного ml-dsa = 0.1.0-rc.4 (без него cargo test -p aira-net не компилируется).",
+  "M19a: добавить пункты — ALPN aira/2/{chat,handshake,file}; Message::Ack{counter} в chat-протоколе (без него dequeue-после-ack невозможен); EndpointId обеих сторон в подписываемые данные handshake (уточнение п.6); одна константа размера конверта в aira-core; шифрование файлов per-file ключом из ratchet (или пункт в M23 п.3: «файлы > 1 MB не PQ-защищены» в THREAT_MODEL/PRIVACY).",
+  "M19: добавить таймауты (connect 5 с, read_framed 30 с, handshake reply 10 с), инкрементальное выделение в read_framed, QUIC-лимиты §11B.3 (16/32 стрима, окна 256/64 KB, idle 30 с), BlobStore на FsStore + приёмная сторона файлов, gate «EndpointId известен» до decrypt.",
+  "M19b: SetTransportMode ≠ direct → Error, скрыть выбор в GUI/CLI; удалить transport/{obfs,mimicry,cdn,reality,fingerprint,tor}.rs, фичи, optional-deps и tests/dpi_simulator.rs; KEY_CONTEXTS:92-95; spec §11A → таблица статусов, §11A.6 → unstable-custom-transports (датаграммный CustomTransport iroh 1.1); QR = байты postcard(InvitationLink), InvitationLink получает version/fingerprint_hint/expires_at/подпись.",
+  "M20 п.6 (:671-675): зафиксировать сигнатуру AiraPreset { relays, relay_auth_token, pkarr_relay, dns_origin, publish_direct_addrs, n0_fallback } impl iroh::endpoint::presets::Preset; NetConfig + AiraEndpoint::bind_with(cfg, secret_key); publish_direct_addrs = false по умолчанию; тест с iroh::test_utils::run_relay_server (dev-фича test-utils).",
+  "M21 п.3 (:697-700): Retrieve{after_seq, limit} с ответом ≤ MAX_FRAME_SIZE (пагинация), ack по seq; п.1 — вместе с relay.rs удалить aira/relay/mailbox/v1 из docs/KEY_CONTEXTS.md:74 и NetError::{MailboxFull,MailboxNotFound,RateLimited} перенести в aira-relay.",
+  "M22: EndpointHooks iroh 1.1 (endpoint/hooks.rs) как точка подключения tiers/puzzles; RateLimiter::keyed по EndpointId."
+ ],
+ "open_questions": [
+  "Шифровать ли файлы ≥ 1 MB per-file ключом из ratchet в M19a (1–2 дня) или выпускать бету с оговоркой «файлы > 1 MB не PQ-защищены» в THREAT_MODEL/PRIVACY?",
+  "Удалять transport/* (obfs/mimicry/cdn/reality/fingerprint/tor, 3 722 строки, 6 optional-зависимостей) из main или переносить в ветку experimental/transports?",
+  "publish_direct_addrs (AddrFilter в pkarr): публиковать прямые IP клиентов (быстрее прямые соединения, IP виден всем, кто знает EndpointId) или только relay — предлагаемый дефолт для беты false.",
+  "Оставлять ли CI-job cargo check -p aira-net --all-features, если транспорты не удаляются (сейчас код не собирается в CI с апреля)?"
+ ]
+}
