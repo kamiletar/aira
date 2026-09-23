@@ -53,17 +53,23 @@ spec-drift, pq-crypto, wasm — см. ниже), offline и release-2026 упа�
 После каждого агента: выжимка в аудит-документ + коммит `docs(audit): …` только docs/spec.
 
 **Как продолжить в следующей сессии (первым делом):**
-1. `Workflow({scriptPath: "<скрипт ниже>", resumeFromRunId: "wf_1a8f6c82-919"})` — A/B/C вернутся из кэша,
-   D → E → F пойдут по одному (журнал: D и E помечены `failed`, кэша нет; F в скрипте есть).
-   Альтернатива без workflow — по одному `Agent` с промптами из скрипта (секция TOPICS, ключи D/E/F).
+
+> Обновлено 2026-09-24: `resumeFromRunId` работает только в той же сессии, поэтому в новой сессии
+> резюм через Workflow недоступен. Скрипт с промптами скопирован в репозиторий:
+> **`.claude/docs/audit-2026-09/phase3-workflow.js`** (константы `COMMON`, `SUMMARY`, массив `TOPICS`).
+
+1. Запустить D → E → F **по одному** через `Agent` (subagent general-purpose): промпт = `COMMON` +
+   `TOPICS[key].prompt` с подстановкой `{FILE}` → `TOPICS[key].file`; попросить вернуть сводку по схеме
+   `SUMMARY`. Либо `Workflow({scriptPath: ".claude/docs/audit-2026-09/phase3-workflow.js"})`, предварительно
+   удалив из `TOPICS` ключи A/B/C (уже готовы). Проверить готовность — по наличию файлов отчётов в этом каталоге.
 2. После каждого: выжимка в `release-audit-2026-09.md` §8.4/§8.5/§8.6 (заготовки есть) по образцу §8.1–8.3,
    raw JSON из журнала → `raw/<agentId>.json`, коммит `docs(audit): …`.
 3. Затем — **внести правки планов из §8.1–8.6 в `spec/18-milestones.md`** (в §16.1 стоит ⚠️-заметка с
    самым важным; полные списки `plan_changes` — в `raw/a1c5b7cca4e37a69a.json`, `raw/a579b3ceafc9b3851.json`,
    `raw/a2593b8a7011c8976.json`) и собрать все «решения владельца» из §8 в один список для Kami.
 
-Запуск: Workflow `wf_1a8f6c82-919` (task w07uqn76c), скрипт
-`…\099428dc-…\workflows\scripts\aira-audit-phase3-sequential-wf_1a8f6c82-919.js`, журнал
+Исторически (сессия 099428dc, локально у владельца): Workflow `wf_1a8f6c82-919` (task w07uqn76c), скрипт
+`…\099428dc-…\workflows\scripts\aira-audit-phase3-sequential-wf_1a8f6c82-919.js` (копия — `phase3-workflow.js`), журнал
 `…\subagents\workflows\wf_1a8f6c82-919\journal.jsonl` (в нём — структурированные результаты каждого
 агента: file_written, summary, blockers, top_findings, plan_changes, open_questions). Если сессия
 оборвалась — `Workflow({scriptPath, resumeFromRunId: "wf_1a8f6c82-919"})` доделает оставшиеся
