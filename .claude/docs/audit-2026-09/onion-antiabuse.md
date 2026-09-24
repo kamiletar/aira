@@ -466,7 +466,7 @@ guard с одним IP (это и есть смысл guard'а — меньше 
 
 ## 8. Правки планов
 
-Нумерация согласована с отчётами E и F: **M24a** community relays (M24a.1 каталог + server-relay, M24a.2 роли `relay`/`mailbox` в клиенте; тема F, `community-relays.md`), **M24b–M24c** — эта тема; M25 группы v2, M26 мультидевайс v2, M27 Bot API v2, M28 «дешёвые фичи §6.x».
+Нумерация согласована с отчётами E и F: **M24a** community relays (M24a.1 каталог + server-relay, M24a.2 роли `relay`/`mailbox` в клиенте; тема F, `community-relays.md`), **M24b–M24d** — эта тема; M25 группы v2, M26 мультидевайс v2, M27 Bot API v2, M28 «дешёвые фичи §6.x».
 
 **M18** — `iroh = "1.2"`, `iroh-relay = "1.2"` (server, F/M20): 1.2.0 от 09.09.2026, `rust-version` 1.91
 как и 1.1; wire совместим.
