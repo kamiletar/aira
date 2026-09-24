@@ -70,8 +70,8 @@ implemented» (`server.rs:486-500`), M20 п.4 на них рассчитывае
 `info_span!` (`http_server.rs:499`); INFO — iroh 1.2.0 вышла 09.09.2026, M18 целить в `iroh = "1.2"`.
 
 **Место в плане (§8):** предпосылки в M19/M20/M21 (relay-only по умолчанию, ссылка без IP, RelayMap = мосты,
-mailbox принимает депозиты от форвардера с подписью sender внутри), затем **M24c Aira Onion v1 (4–6 недель)**,
-**M24d мосты и обфускация (2–3 недели)**, **M24e mix-профиль (2 недели)**. До M24c честная формулировка в
+mailbox принимает депозиты от форвардера с подписью sender внутри), затем **M24b Aira Onion v1 (4–6 недель)**,
+**M24c мосты и обфускация (2–3 недели)**, **M24d mix-профиль (2 недели)**. До M24b честная формулировка в
 THREAT_MODEL: «IP скрыт от собеседника; от оператора relay — нет».
 
 **Решения владельца (§9):** дефолт hide-IP (relay-only) для беты; отдельная хоп-идентичность = второй
@@ -80,15 +80,15 @@ mode через «медленную полосу» или только direct �
 
 ## 1. Модель угроз и что именно обещаем
 
-| Наблюдатель | Что видит сегодня (v0.3.5 + M19 как запланирован) | Обещание после M19/M20 | После M24c (onion) | После M24e (mix) |
+| Наблюдатель | Что видит сегодня (v0.3.5 + M19 как запланирован) | Обещание после M19/M20 | После M24b (onion) | После M24d (mix) |
 |---|---|---|---|---|
 | Собеседник (контакт) | ваш IP при любом прямом соединении (hole punching через relay обменивает адреса), LAN-адреса в ссылке, если M19b п.12 сделать как в net-audit §3 | **IP скрыт**: relay-only endpoint, ссылка = EndpointId + relay URL; direct — per-contact opt-in («быстрый режим», раскрывает IP этому контакту) | то же + не видит и ваш relay/guard | то же |
 | Оператор одного relay / хопа / mailbox | IP + EndpointId + набор коробок (v1/v2) | IP + EndpointId (relay-only через один relay = он видит всё, кроме содержимого) | видит **либо** ваш IP (guard), **либо** mailbox (M), никогда связку; корреляция по времени между G и M требует сговора | сговор G+M не даёт корреляции по времени без долгих наблюдений |
-| Провайдер / ТСПУ | UDP QUIC v1 к relay/пирам (фингерпринт версии), SNI relay-домена в WSS, ALPN `aira/1/*` читаемы в QUIC Initial | то же (WSS:443 на свой домен — блокируется по SNI/IP) | вход через резидентные мосты без каталога; после M24d — обфусцированные датаграммы без сигнатуры | то же |
+| Провайдер / ТСПУ | UDP QUIC v1 к relay/пирам (фингерпринт версии), SNI relay-домена в WSS, ALPN `aira/1/*` читаемы в QUIC Initial | то же (WSS:443 на свой домен — блокируется по SNI/IP) | вход через резидентные мосты без каталога; после M24c — обфусцированные датаграммы без сигнатуры | то же |
 | Глобальный пассивный наблюдатель | всё | всё (тайминг/объёмы) | корреляция по времени возможна (как в Tor) | Poisson-микширование + cover-петли; анонимность ограничена размером активного множества |
 | Sybil-оператор многих хопов | н/п | н/п | guard-персистентность, разнообразие /16 и AS, вес по наблюдаемому uptime; всё же дешевле, чем в Tor (§6) | то же |
 
-Формулировки для `docs/THREAT_MODEL.md` (M23 п.3): «Aira скрывает IP от собеседника (relay-only) и, с M24c,
+Формулировки для `docs/THREAT_MODEL.md` (M23 п.3): «Aira скрывает IP от собеседника (relay-only) и, с M24b,
 от любого одного оператора инфраструктуры; защита от провайдера — устойчивость к блокировкам, не
 невидимость; защита от глобального наблюдателя — только в mix-профиле и с оговорками». Слово
 «невзламываемый» не использовать ни в README, ни в статьях: это приглашение для аудиторов и репутационный
@@ -101,12 +101,12 @@ mode через «медленную полосу» или только direct �
 | HIGH (дизайн) | Endpoint всегда с IP-транспортами и hole punching; режима «только relay» нет | `crates/aira-net/src/endpoint.rs:56-95` — `Endpoint::builder(presets::N0)` / `empty_builder()`, ни `clear_ip_transports`, ни `RelayMode`; iroh 1.2.0 `src/endpoint.rs:510` `pub fn clear_ip_transports(mut self)` (`#[cfg(not(wasm_browser))]`), `src/socket.rs:13-14`: «prevents this endpoint from attempting to hole punch and prevents it from responding to any hole punching attempts» | контакт узнаёт публичный IP (и LAN-адреса) при первом же соединении — обещание «скрыть IP от собеседника» невыполнимо без этого флага | `NetConfig { hide_ip: bool }` → `builder.clear_ip_transports()`; дефолт **true** для беты (решение владельца); per-contact «direct mode» как исключение | M19/M20 |
 | HIGH (план) | Invitation link с прямыми адресами | план M19b п.12 (`spec/18-milestones.md:590-593`) и `net-audit.md` §3: «заполнять `endpoint_addr_bytes = postcard(ep.addr())`»; `endpoint.rs:105` `pub fn addr(&self) -> EndpointAddr { self.inner.addr() }`; iroh 1.2 `endpoint.rs:1207` doc: «will have the current RelayUrl **and direct addresses**»; `iroh-base/src/endpoint_addr.rs:42-62` `addrs: BTreeSet<TransportAddr>` с `Ip(SocketAddr)` | ссылка, пересланная через Telegram/почту, несёт LAN- и публичный IP отправителя всем промежуточным сервисам и получателю | в ссылку класть `EndpointAddr::new(id).with_relay_url(url)` (`endpoint_addr.rs:96,112`), `Ip(..)` отбрасывать; тест «в ссылке нет `TransportAddr::Ip`» | M19b |
 | MEDIUM | `net_report` пробует до 5 relay из RelayMap | iroh 1.2 `src/net_report.rs:497-505`: `const MAX_RELAYS: usize = 5; … for relay in relays.into_iter().take(MAX_RELAYS)`; `net_report/probes.rs:98-106` — HTTPS-пробы на каждый relay | каждый relay из списка (до 5) узнаёт IP клиента при старте и периодически, даже если клиент им не пользуется; глобальный список relay в клиенте = раздача IP всем операторам | RelayMap клиента = только его мосты/guard-relay (1–2); список сообщества хранить отдельно и не подставлять в `RelayMode::Custom` целиком | M20 |
-| MEDIUM | Mailbox видит IP и EndpointId депозитора и владельца | `crates/aira-net/src/relay.rs:214-263` (deposit на соединении депозитора), `RelayServer::accept` по `connection.remote_id()`; аудит §4.3: «relay видит EndpointId клиента и набор коробок» | один оператор связывает «кто → в какую коробку» и IP обеих сторон | v2: депозит приходит **от хопа**, подпись `sender_sk` внутри ячейки (уже в дизайне §4.3), retrieve — по маршруту получателя; до M24c — честно в PRIVACY.md | M21/M24c |
+| MEDIUM | Mailbox видит IP и EndpointId депозитора и владельца | `crates/aira-net/src/relay.rs:214-263` (deposit на соединении депозитора), `RelayServer::accept` по `connection.remote_id()`; аудит §4.3: «relay видит EndpointId клиента и набор коробок» | один оператор связывает «кто → в какую коробку» и IP обеих сторон | v2: депозит приходит **от хопа**, подпись `sender_sk` внутри ячейки (уже в дизайне §4.3), retrieve — по маршруту получателя; до M24b — честно в PRIVACY.md | M21/M24b |
 | MEDIUM (план) | `accept_conn_limit`/`accept_conn_burst` не работают | iroh-relay 1.2 `src/server.rs:486-500`: «TODO: accept_conn_limit and accept_conn_burst are not currently implemented … setting this has no effect»; реализован только `client_rx: ClientRateLimit { bytes_per_second, max_burst_bytes }` (`:505-520`) | M20 п.4 (`spec/18-milestones.md:670-671`) и `relay-deploy-plan.md` этап 3 закладывают лимит соединений, которого нет | лимит соединений — на nginx (`limit_conn`/`limit_req` в `stream`) или через `AccessControl::on_connect` (`server.rs:189-215` `ClientRequest { endpoint_id, protocol_version, request }`); в плане оставить только `client.rx` | M20 |
-| MEDIUM | QUIC Initial читаем DPI: ALPN и параметры видны | RFC 9001 §5.2 (ключи Initial из DCID + известная соль — «no confidentiality against on-path»); ALPN `aira/1/{chat,file,handshake,relay}` (`lib.rs:38-44`) и `/iroh-bytes/4` идут в ClientHello внутри Initial; ТСПУ фингерпринтит QUIC v1 по `00 00 00 01` на UDP/443 ≥ 1001 B (Xue et al., IMC'22; расширяемо на любые порты) | протокол идентифицируется первым же пакетом; переименование ALPN не помогает | обфускация датаграмм первого хопа через `iroh::endpoint::transports::CustomTransport` (1.2 `socket/transports/custom.rs:24-70`, фича `unstable-custom-transports`, `Cargo.toml:98`) с PSK моста; §5.8 | M24d |
+| MEDIUM | QUIC Initial читаем DPI: ALPN и параметры видны | RFC 9001 §5.2 (ключи Initial из DCID + известная соль — «no confidentiality against on-path»); ALPN `aira/1/{chat,file,handshake,relay}` (`lib.rs:38-44`) и `/iroh-bytes/4` идут в ClientHello внутри Initial; ТСПУ фингерпринтит QUIC v1 по `00 00 00 01` на UDP/443 ≥ 1001 B (Xue et al., IMC'22; расширяемо на любые порты) | протокол идентифицируется первым же пакетом; переименование ALPN не помогает | обфускация датаграмм первого хопа через `iroh::endpoint::transports::CustomTransport` (1.2 `socket/transports/custom.rs:24-70`, фича `unstable-custom-transports`, `Cargo.toml:98`) с PSK моста; §5.8 | M24c |
 | LOW | IP клиента в логах iroh-relay | iroh-relay 1.2 `src/server/http_server.rs:490-499`: `debug!("connection opened from {peer_addr}")` и `info_span!("conn", peer = %peer_addr)` — IP попадает в **каждую** строку лога уровня info внутри спана | оператор relay сообщества хранит IP всех клиентов по умолчанию | `RUST_LOG=warn` в unit/Docker (`relay-deploy-plan.md` этап 4 сейчас `info`), пункт в `docs/RELAY.md` и PRIVACY.md | M20/F |
 | LOW | Link preview и разметка | `spec/06-protocol-messaging.md:132-141` — превью генерирует отправитель (HTTP-запрос к сайту с IP отправителя), opt-out | в hidden-профиле отправитель раскрывает IP сайту по ссылке | в hidden/mix профилях превью **opt-in**, по умолчанию выключено; §6.25 уже запрещает сетевые запросы у получателя | M19b |
-| LOW | Файлы — только прямое соединение | `spec/08-protocol-security.md:79-91` (§6.22): «файловая передача требует оба пира онлайн», `blobs.rs` через iroh-blobs | в relay-only режиме файлы идут через relay (работает, медленнее); через onion — нет пути вообще | §5.7: файлы в hidden-профиле — «медленная полоса» с марками либо direct с явным предупреждением | M24c |
+| LOW | Файлы — только прямое соединение | `spec/08-protocol-security.md:79-91` (§6.22): «файловая передача требует оба пира онлайн», `blobs.rs` через iroh-blobs | в relay-only режиме файлы идут через relay (работает, медленнее); через onion — нет пути вообще | §5.7: файлы в hidden-профиле — «медленная полоса» с марками либо direct с явным предупреждением | M24b |
 | INFO | iroh 1.2.0 (09.09.2026) | реестр: `iroh-1.2.0`, `iroh-relay-1.2.0`, `noq-1.3.0`; changelog: `RelayStatus::auth_denied_reason`, n0-dns-resolver, deprecated nameserver builders; `rust-version = "1.91"` | M18 нацелен на 1.1 | `iroh = "1.2"`, `iroh-relay = "1.2"` (server) | M18 |
 
 Проверено дополнительно: pkarr-публикация по умолчанию **не** содержит IP — iroh 0.97 `address_lookup/pkarr.rs:22-23,177` (`AddrFilter::relay_only()` по умолчанию, «avoids leaking IP addresses»), в 1.2 то же (`endpoint.rs:624 addr_filter`). Это единственная точка, где IP сегодня *не* утекает. Хуки для допуска соединений есть: iroh 1.2 `endpoint/hooks.rs:68-110` `EndpointHooks::{before_connect, after_handshake}` — сюда встаёт tier/PoW-гейт M22 и «хоп не соединяется с адресом не из своей таблицы» (§4, AP-2).
@@ -174,7 +174,7 @@ AP-1/AP-2/AP-5 гарантируют, что добровольцы при эт
 
 ## 5. Дизайн «Aira Onion v1» (все пиры — хопы)
 
-Рабочее имя; всё ниже — предложение для спеки (новый §5.5 в `spec/03-network.md`) и для M24c–M24e. Числа —
+Рабочее имя; всё ниже — предложение для спеки (новый §5.5 в `spec/03-network.md`) и для M24b–M24d. Числа —
 стартовые значения для обсуждения, не догма.
 
 ### 5.1 Роли, классы, две идентичности
@@ -211,7 +211,7 @@ struct NodeRecord {
     class: NodeClass, caps: Caps { hop, mailbox, bridge, relay },
     relay_urls: Vec<RelayUrl>,   // как дойти до NAT-хопа (без IP!)
     share_hint_kbps: u16,        // объявленная полоса форвардинга
-    obfs_psk_hint: Option<[u8; 8]>, // есть ли мост-обфускация (M24d); сам PSK — только контактам
+    obfs_psk_hint: Option<[u8; 8]>, // есть ли мост-обфускация (M24c); сам PSK — только контактам
     issued_at: u64, expires_at: u64, // 24 ч
     sig: [u8; 64],               // Ed25519 по hop_id над всем выше
 }
@@ -344,7 +344,7 @@ S ── G_s ── M_s ──▶ H ◀── M_r ── G_r ── R
 |---|---|---|---|
 | direct (per-contact opt-in, IP раскрыт этому контакту) | ячейки | iroh-blobs напрямую | iroh-blobs напрямую |
 | hide-IP (relay-only, M19/M20) | ячейки | iroh-blobs через relay (relay видит обе стороны) | то же |
-| standard / mix (M24c) | ячейки | «медленная полоса»: ячейки в mailbox H (квота 10 MB), марка PoW 20 бит на MB, 16 KB/s → 10 MB ≈ 11 мин | **недоступно**; UI предлагает direct с предупреждением |
+| standard / mix (M24b) | ячейки | «медленная полоса»: ячейки в mailbox H (квота 10 MB), марка PoW 20 бит на MB, 16 KB/s → 10 MB ≈ 11 мин | **недоступно**; UI предлагает direct с предупреждением |
 
 Медленная полоса нарочно непривлекательна для массового трафика (AP-4) и при этом закрывает главный
 бытовой случай — фото/голосовые ≤ 10 MB.
@@ -364,7 +364,7 @@ S ── G_s ── M_s ──▶ H ◀── M_r ── G_r ── R
    часовой пояс ОС + страна публичного IP, которую сообщает *свой* relay (`net_report` даёт публичный
    адрес, relay проекта/сообщества может отдавать `country` в ответе) + явный выбор в онбординге с
    объяснением. Список — как у I2P (RU, CN, IR, … по Freedom House), решение владельца.
-4. **Транспорт первого хопа (M24d).** Сегодня прямой QUIC iroh фингерпринтится ТСПУ (версия `00 00 00 01`;
+4. **Транспорт первого хопа (M24c).** Сегодня прямой QUIC iroh фингерпринтится ТСПУ (версия `00 00 00 01`;
    правило описано для UDP/443, но iroh слушает случайный порт — это отсрочка, не защита), а ALPN и
    TLS-параметры читаются из Initial (RFC 9001). Datagram-обфускация в `CustomTransport` (iroh 1.2
    `socket/transports/custom.rs:24-70`: `bind → CustomEndpoint { watch_local_addrs, create_sender,
@@ -466,7 +466,7 @@ guard с одним IP (это и есть смысл guard'а — меньше 
 
 ## 8. Правки планов
 
-Нумерация согласована с отчётами E и F: **M24a** каталог relay + community-server-relay и **M24b** client-relay (тема F, `community-relays.md`), **M24c–M24e** — эта тема; M25 группы v2, M26 мультидевайс v2, M27 Bot API v2, M28 «дешёвые фичи §6.x».
+Нумерация согласована с отчётами E и F: **M24a** community relays (M24a.1 каталог + server-relay, M24a.2 роли `relay`/`mailbox` в клиенте; тема F, `community-relays.md`), **M24b–M24c** — эта тема; M25 группы v2, M26 мультидевайс v2, M27 Bot API v2, M28 «дешёвые фичи §6.x».
 
 **M18** — `iroh = "1.2"`, `iroh-relay = "1.2"` (server, F/M20): 1.2.0 от 09.09.2026, `rust-version` 1.91
 как и 1.1; wire совместим.
@@ -480,7 +480,7 @@ guard с одним IP (это и есть смысл guard'а — меньше 
 в invitation link — `EndpointAddr::new(id).with_relay_url(url)` без `TransportAddr::Ip`; тест «в ссылке нет
 IP»; per-contact `direct` — отдельным пунктом M19b (UI «разрешить прямое соединение с этим контактом»).
 
-**M19b** — превью ссылок opt-in при `hide_ip`; экран Network: роль (client/hop), share, guard'ы (после M24c).
+**M19b** — превью ссылок opt-in при `hide_ip`; экран Network: роль (client/hop), share, guard'ы (после M24b).
 
 **M20** — п.4: убрать `accept_conn_limit/burst` (не реализованы в iroh-relay 1.2, `server.rs:486-500`),
 лимит соединений — nginx `stream` `limit_conn` или `AccessControl::on_connect`; п.6: RelayMap клиента = свои
@@ -489,12 +489,12 @@ IP»; per-contact `direct` — отдельным пунктом M19b (UI «ра
 
 **M21** — п.3: `Deposit` может приходить от хопа (депозитор ≠ отправитель): лимиты по `sender_pk`/`mailbox`,
 не по EndpointId/IP депозитора; п.5: бюджет хранилища на ноду (`storage_budget`, 0 у клиентов по умолчанию,
-F решает про клиент-mailbox); заготовка `Register { surb_stock: Vec<Surb> }` (пустая до M24c).
+F решает про клиент-mailbox); заготовка `Register { surb_stock: Vec<Surb> }` (пустая до M24b).
 
 **M22** — PoW: общая функция адаптивной сложности и `slot`-привязки для `ContactRequest`, intro-mailbox и
 `HopSetup`; `EndpointHooks` (tiers) — та же точка, что AP-2.
 
-**M23** — THREAT_MODEL/PRIVACY: формулировки §1; README без слова «анонимный» до M24c.
+**M23** — THREAT_MODEL/PRIVACY: формулировки §1; README без слова «анонимный» до M24b.
 
 **Новый Milestone 24b — Aira Onion v1 (после M21 и M24a community relays, тема F; 4–6 недель, один разработчик):**
 1. `crates/aira-onion`: `NodeRecord` (подпись, TTL), `Cell` (слои, сдвиг, keystream, тег), `HopSetup` (hybrid
@@ -508,7 +508,7 @@ F решает про клиент-mailbox); заготовка `Register { surb
 5. Тесты: 5 демонов in-process (S, G, M, H, R) — доставка, «H не знает IP S и R» (assert по логам/статусу),
    «хоп не соединяется с IP из ячейки», бюджет исчерпан → `Busy`, replay → drop, churn (убить M посреди
    передачи) — 1 неделя.
-6. Спека: новый §5.5 «Aira Onion», §11 (строка «Вне scope v0.1: onion» → M24c), §11B.5 + бюджеты хопов, §6.22
+6. Спека: новый §5.5 «Aira Onion», §11 (строка «Вне scope v0.1: onion» → M24b), §11B.5 + бюджеты хопов, §6.22
    файлы по профилям, глоссарий; KEY_CONTEXTS.
 
 **Новый Milestone 24c — Мосты и обфускация (2–3 недели):** `CustomTransport` (фича `unstable-custom-transports`
@@ -520,23 +520,23 @@ DPI-тест **на реальном трафике** (nDPI/Wireshark — тре
 `Drop`, метрики; только desktop.
 
 **Порядок относительно беты (решение владельца):** бета (M23) — с `hide_ip` и честной моделью угроз;
-M24c — до 1.0 (иначе внешний аудит будет аудировать не тот протокол); M24d — до 1.0 для strict-стран;
-M24e — после 1.0.
+M24b — до 1.0 (иначе внешний аудит будет аудировать не тот протокол); M24c — до 1.0 для strict-стран;
+M24d — после 1.0.
 
 ## 9. Решения владельца
 
 1. `hide_ip = true` по умолчанию в бете (весь трафик через relay проекта, прямые соединения — per-contact
-   opt-in)? Рекомендую **да**: это единственное, что даёт «скрыть от собеседника» до M24c, и это же готовит
+   opt-in)? Рекомендую **да**: это единственное, что даёт «скрыть от собеседника» до M24b, и это же готовит
    инфраструктуру relay (M20) к реальной нагрузке.
 2. Две iroh-идентичности (второй `Endpoint` под хоп) — принять цену (второе relay-соединение)? Рекомендую да.
 3. Strict-список стран и авто-hidden: брать список I2P как старт (RU, CN, IR, … ) + явный выбор в
    онбординге? Кто ведёт список?
 4. Мобильные — только клиент (рекомендую) или ещё «мост для контактов» (батарея)?
-5. Профиль по умолчанию после M24c: `standard` (рекомендую) или `fast`?
+5. Профиль по умолчанию после M24b: `standard` (рекомендую) или `fast`?
 6. Файлы в standard/mix: медленная полоса ≤ 10 MB + direct с предупреждением (рекомендую) или только direct?
 7. Дефолты share (32 KB/s, 3 GB/мес) — согласовать; показывать ли пользователю счётчик «вы помогли сети на
    N MB» (I2P-style мотивация)?
-8. M24c до 1.0 или после? (Рекомендую до — см. §8.)
+8. M24b до 1.0 или после? (Рекомендую до — см. §8.)
 9. Имя фичи в UI/спеке: «Aira Onion» / «скрытый маршрут» / другое.
 10. Формулировки для README/статьи: заменить «невзламываемый» на таблицу обещаний §1?
 
