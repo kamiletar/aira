@@ -6,7 +6,9 @@
 
 ## 11. Модель угроз
 
-Файл `docs/THREAT_MODEL.md` должен покрывать:
+Публичные документы — `docs/THREAT_MODEL.md` (таблица обещаний по четырём наблюдателям, статусы
+«код / M<N>») и `docs/PRIVACY.md` («что видит каждый наблюдатель»); **спека — нормативный источник**,
+при расхождении правится документ. Обновлено 24.09.2026 по аудиту 2026-09 и решениям владельца.
 
 | Угроза                                                     | Митигация                                           |
 | ---------------------------------------------------------- | --------------------------------------------------- |
@@ -16,30 +18,62 @@
 | Компрометация одного сообщения                             | Triple Ratchet (SPQR) forward secrecy               |
 | PQ атака на ongoing messages (не только handshake)         | SPQR: PQ ratchet каждые ~50 сообщений               |
 | Memory safety exploits                                     | Safe Rust, zeroize                                  |
-| Metadata (кто с кем общается)                              | Pairwise relay mailboxes, padding                   |
-| Traffic analysis (длина сообщений)                         | Padding до фиксированных блоков 256-4096 байт       |
+| Metadata (кто с кем общается)                              | Pairwise mailbox v2 по направлению (§6.3b), relay-only endpoint (`hide_ip`, §5.1), onion 2+M+2 (§5.5, M24b), padding |
+| Traffic analysis (длина сообщений)                         | Padding до фиксированных блоков 256-4096 байт; onion — ячейки 1 280 B (M24b) |
 | MITM при первом соединении                                 | Safety Numbers, TOFU + out-of-band верификация      |
-| Атака на bootstrap ноды                                    | Signed peer records, TOFU для контактов             |
-| Спам / массовые Contact Request                            | PoW (20 бит), rate limiting, block list             |
+| Утечка IP собеседнику / в invitation link                  | `hide_ip = true`: `clear_ip_transports()`, ссылка без IP, pkarr только relay (§5.1); direct — per-contact opt-in |
+| Атака на якоря / каталог relay                             | Подписанный каталог (ML-DSA-65; 2-of-3 к 1.0), TOFU для контактов, точки входа без глобального каталога (§5.3, §5.5.10) |
+| Спам / массовые Contact Request                            | PoW адаптивный 16→28 бит с `server_nonce ‖ slot`, rate limiting, block list, `ContactStamp` (п. 11B.1, §13) |
 | Flood в групповых чатах                                    | Rate limit 30 msg/min, admin-only invites           |
-| DPI / блокировка протокола                                 | Pluggable transports, protocol mimicry (п. 11A)     |
-| Активное зондирование (active probing)                     | REALITY-like: fallback на легитимный сайт           |
+| DPI / блокировка протокола                                 | `hide_ip` + iroh-relay WSS:443 на своём домене (M20); мосты с PSK-обфускацией датаграмм через `CustomTransport` (M24c, п. 11A) |
+| Активное зондирование (active probing)                     | PSK-мосты: без PSK мост не отвечает как Aira (M24c); REALITY-fallback на чужой сайт исключён |
+| QUIC Initial / ALPN читаемы DPI (RFC 9001)                 | Обфускация датаграмм первого хопа (`aira/bridge/obfs/v1`, M24c); переименование ALPN не помогает |
 | DDoS / connection exhaustion                               | Connection tiers, puzzles, rate limiting (п.11B)    |
 | CPU exhaustion через крипто                                | Adaptive puzzles перед PQ handshake                 |
-| DHT poisoning / Sybil                                      | IP diversity, signed records, PoW (п. 11B.4)        |
-| Relay flooding                                             | Per-identity квоты, ring buffer, PoW (п. 11B.5)     |
-| Amplification attack                                       | QUIC 3x limit, authenticated deposits               |
-| Eclipse attack (изоляция ноды)                             | Subnet diversity, anchor connections (п. 11B.7)     |
+| Sybil среди relay / хопов                                  | Каталог: 72 ч испытания, PoW на announce, ≤ 5 записей/оператор, denylist; хопы: proof-by-use, guard-персистентность, разнообразие /16 + AS (§5.3, §5.5.8); DHT — после релиза (п. 11B.4) |
+| Relay flooding                                             | Регистрация коробок владельцем, квоты на коробку и конверт, TTL на конверт, `Register` ≤ 20/сутки, intro PoW (п. 11B.5) |
+| Паразитный прокси через relay / хопы (exit, слив чужого трафика, mailbox как хранилище, чужой трафик с IP пользователя) | Инварианты AP-1…AP-7 — обязательны для любого форвардящего кода (§5.5.2) |
+| Перечисление relay / хопов и блокировка списка             | Нет глобального каталога, мосты через контакты (`BridgeOffer`), hidden mode для strict-стран (§5.5.10) |
+| Корреляция по времени guard + mailbox (сговор)             | Mix-профиль: Poisson-задержки + cover-петли (M24d); до него — честно в `docs/THREAT_MODEL.md` как граница `standard` |
+| Tagging-атака guard + H (onion)                            | Требует сговора; guard-персистентность, cover-петли mix; честно в `docs/THREAT_MODEL.md` (§5.5.6) |
+| Amplification attack                                       | QUIC 3x limit, подписанные deposits, AP-2 (хоп не шлёт по адресу из ячейки) |
+| Eclipse attack (изоляция ноды)                             | Subnet / operator diversity, anchor connections (п. 11B.7) |
+| Push-URL mailbox как SSRF / exit relay                     | `push_allowlist`, без редиректов и приватных диапазонов (§5.1.1, M21) |
+| Оператор relay хранит IP клиентов (логи)                   | `RUST_LOG=warn`, `[log] client_ips = false`; `docs/PRIVACY.md` «что видит оператор» |
+| Файлы через iroh-blobs открытым содержимым (не PQ)         | Per-file ключ из ratchet, blob = шифротекст, хэш от шифротекста (§6.2, M19a) |
 | Доказательство авторства сообщения третьей стороне         | Deniability: симметричные MAC, нет подписей (6.20)  |
-| Скомпрометированный ключ                                   | Key revocation + DHT, уведомление контактов (6.18)  |
-| Link preview утечка IP                                     | Превью генерирует отправитель, не получатель (6.12) |
+| Скомпрометированный ключ                                   | Key revocation, уведомление контактов (6.18); DHT-часть — после релиза |
+| Link preview утечка IP                                     | Превью генерирует отправитель, не получатель (6.12); при `hide_ip` — opt-in |
 | Typing indicator как метаданные активности                 | Opt-out per-contact, rate limit (п. 6.15)           |
 
-Вне scope v0.1: полная анонимность на уровне сети (onion routing).
+Scope по версиям: onion-маршрутизация (Aira Onion, §5.5) — **M24b (план, до 1.0)**; mix-профиль против
+глобального наблюдателя — **M24d (после 1.0)**. До M24b формулировка: «IP скрыт от собеседника (relay-only);
+от оператора вашего relay — нет».
+
+**Таблица обещаний.** Единственно допустимые формулировки для README, `docs/THREAT_MODEL.md`,
+`docs/PRIVACY.md` и статей — по четырём наблюдателям (полная таблица — §5.5.1; решение владельца B12):
+
+| Наблюдатель | Обещание после M19/M20 | После M24b | После M24d |
+|---|---|---|---|
+| Собеседник | IP скрыт (relay-only, ссылка без IP); direct — по вашему выбору для конкретного контакта | + не видит ваш relay / guard | то же |
+| Оператор одного relay / хопа / mailbox | видит ваш IP и `EndpointId`, не содержимое | видит **либо** IP, **либо** mailbox — никогда связку | сговор двух операторов не даёт корреляции по времени без долгих наблюдений |
+| Провайдер / DPI | видит зашифрованный трафик к relay (SNI / QUIC v1) — **устойчивость к блокировкам, не невидимость** | вход через резидентные мосты; после M24c — без сигнатуры | то же |
+| Глобальный пассивный наблюдатель | ничего не обещаем | корреляция по времени возможна (как в Tor) | Poisson-микширование + cover-трафик, с оговорками о размере активного множества |
+
+Правило: слово **«невзламываемый»** (и «анонимный» до M24b) в документах и коде не употребляется —
+это приглашение для аудиторов и репутационный риск при первом же timing-исследовании.
 
 ---
 
 ## 11A. Защита от DPI и цензуры
+
+> **Решение владельца 24.09.2026 (A13):** модули `aira-net/src/transport/*` (REALITY, «obfs4», mimicry/CPS,
+> CDN, Tor) **удалены из `main`**. Они не были подключены к iroh (байтовые потоки vs QUIC-датаграммы),
+> не собирались в CI с апреля и криптографически несостоятельны: «obfs» без секрета (ключ из открытых
+> nonce), REALITY с открытым 8-байтным префиксом, replay в окне ±60 с и статическим session key, mimicry с
+> length-prefix перед фейковым заголовком, CDN/Tor — заглушки (net-audit §8). При этом GUI/CLI позволяли
+> выбрать любой режим, а трафик не менялся. Обфускация возвращается в M24c как `CustomTransport`;
+> до M24c `SetTransportMode ≠ direct` → `DaemonResponse::Error("not supported in this release")`, выбор в UI скрыт.
 
 ### 11A.1 Модель угрозы
 
@@ -53,241 +87,83 @@ DPI-системы (ТСПУ в РФ, GFW в Китае, NessFW в Иране) �
 | Статистика     | Размер/время пакетов            | ML-классификация (CNN/LSTM)                |
 | Active probing | Ответы на нестандартные запросы | Подключается к серверу, проверяет протокол |
 
-### 11A.2 Архитектура: Pluggable Transport Stack
+**Факты (2022–2026), от которых считаем:**
 
-Вдохновлено ptrs (Rust PT framework) и AmneziaWG 2.0. Каждый слой
-независимо конфигурируем:
+- ТСПУ фингерпринтит QUIC v1 по байтам версии `00 00 00 01` на UDP/443 при размере ≥ 1 001 B
+  (Xue et al., IMC'22). iroh слушает случайный порт — это отсрочка, не защита: правило расширяемо на любые порты.
+- **QUIC Initial расшифровываем любым наблюдателем**: ключи Initial выводятся из открытого DCID и известной
+  соли (RFC 9001 §5.2, «no confidentiality against on-path»). ALPN `aira/2/*`, SNI и transport parameters
+  читаются из первого же пакета; переименование ALPN не прячет протокол.
+- SNI-блокировка WSS к relay по домену; **ECH заблокирован в РФ с 11.2024**; JA4 rustls отличим от браузеров
+  (переставленные cipher suites uTLS не заменяют).
+- Фингерпринт транспорта живёт месяцы, но не годы: Snowflake DTLS — до 03.2026; Moat-bridges Tor блокировались
+  в РФ в 12.2021, 11.2024, 03.2026. Транспорт мостов должен быть заменяемым.
 
-```
-┌──────────────────────────────────────────────────┐
-│  aira-core: зашифрованные сообщения (ChaCha20)   │
-├──────────────────────────────────────────────────┤
-│  Padding Layer: все пакеты → фиксированный размер│
-│  (16 KB, как SimpleX Chat)                       │
-├──────────────────────────────────────────────────┤
-│  Obfuscation Layer (pluggable):                  │
-│  • none      — прямой QUIC (без цензуры)         │
-│  • obfs4/o5  — рандомизация (ptrs крейт)         │
-│  • mimicry   — мимикрия под DNS/QUIC/SIP         │
-│  • reality   — мимикрия под TLS к реальному сайту│
-│  • hysteria2 — маскировка под HTTP/3             │
-├──────────────────────────────────────────────────┤
-│  Transport Layer (pluggable):                    │
-│  • direct    — прямое UDP соединение             │
-│  • relay     — через iroh relay (WebSocket/TLS)  │
-│  • cdn       — через Cloudflare Worker / CDN     │
-│  • tor       — через Tor (arti)                  │
-│  • snowflake — через ephemeral WebRTC peers      │
-└──────────────────────────────────────────────────┘
-```
+### 11A.2 Режимы → статус
 
-### 11A.3 Режимы для разных уровней цензуры
+Вместо «Pluggable Transport Stack» (§11A.2–11A.5 прежней редакции — удалены):
 
-**Режим 1 — Без цензуры (по умолчанию):**
+| Режим | Что это | Статус |
+|---|---|---|
+| `direct` | прямой QUIC iroh, message padding (§6.6) | **реализовано** — единственный `TransportMode` в коде |
+| `hide_ip` (relay-only) | endpoint без IP-транспортов (`clear_ip_transports()`), весь трафик через iroh-relay (§5.1) | план, **M19/M20** (по умолчанию) |
+| iroh-relay по WSS:443 на своём домене | «режим 2»: трафик выглядит как HTTPS к `relay.<domain>`; вариант A деплоя (§5.1.1) | план, **M20**. Ограничение: SNI = домен relay и JA4 rustls → блокируется по домену / фингерпринту; для relay сообщества — фронтирование настоящим веб-сервером (WebTunnel-подход) |
+| Мосты с PSK-обфускацией датаграмм | `CustomTransport` iroh 1.x (фича `unstable-custom-transports`): `AEAD(k_obfs, nonce ‖ padding_len ‖ datagram)`, случайная длина, junk-пакеты; PSK из `BridgeOffer` / ссылки; `k_obfs = derive_key("aira/bridge/obfs/v1", psk)` | план, **M24c** (до 1.0 для strict-стран). Без PSK мост не отвечает как Aira — защита от активного зондирования; с публичным PSK листингуемого хопа — только от сигнатур |
+| Hidden mode + мосты от контактов | вход через `BridgeOffer`, нода не листингуется, relay только через мост (§5.5.10) | план, M24c |
+| REALITY / obfs4 / mimicry (CPS) / CDN / Tor (arti) / Snowflake | — | **удалены из кода** (решение владельца 24.09); после 1.0 возможны только как реализации `CustomTransport`; REALITY (TCP-прокси с fallback на чужой сайт) исключён |
 
-- Прямой QUIC, message padding
-- Минимальный overhead
+### 11A.6 Интеграция с iroh: `CustomTransport` (план, M24c)
 
-**Режим 2 — Умеренная цензура (Россия, Турция):**
-
-- obfs4/o5 обфускация через ptrs
-- CDN relay (Cloudflare Worker) как fallback
-- iroh relay через WebSocket+TLS (выглядит как обычный HTTPS)
-
-**Режим 3 — Тяжёлая цензура (Китай, Иран):**
-
-- REALITY-like мимикрия: соединение выглядит как TLS к apple.com/bing.com
-- Провал аутентификации → трафик проксируется к реальному сайту
-  (active probing не обнаружит протокол)
-- Или: Tor через Snowflake/WebTunnel
-- Или: Protocol mimicry в стиле AmneziaWG CPS (Custom Protocol Signature)
-
-### 11A.4 Protocol Mimicry (вдохновлено AmneziaWG 2.0)
-
-CPS (Custom Protocol Signature) — система мимикрии пакетов под
-легитимные протоколы. Каждый пакет получает заголовок, неотличимый
-для DPI от целевого протокола:
+Реальный API iroh 1.x — `iroh::endpoint::transports` (фича `unstable-custom-transports`; API нестабилен,
+версию iroh фиксировать):
 
 ```rust
-// aira-net/src/transport/mimicry.rs
-
-pub enum MimicryProfile {
-    /// Без мимикрии — стандартный QUIC
-    None,
-    /// Пакеты выглядят как DNS запросы/ответы
-    Dns,
-    /// Пакеты выглядят как QUIC/HTTP/3 к легитимному серверу
-    Quic { sni: String },
-    /// Пакеты выглядят как SIP (VoIP звонки)
-    Sip,
-    /// Пакеты выглядят как STUN (WebRTC NAT traversal)
-    Stun,
-    /// Кастомная сигнатура (CPS формат)
-    Custom(CpsSignature),
+// iroh 1.2, socket/transports/custom.rs (упрощённо)
+pub trait CustomTransport: Send + Sync + 'static {
+    /// Поднимает транспорт; iroh получает endpoint с датаграммным интерфейсом
+    fn bind(&self) -> io::Result<Arc<dyn CustomEndpoint>>;
 }
-
-/// CPS — Custom Protocol Signature (как в AmneziaWG 2.0)
-pub struct CpsSignature {
-    /// Шаблон: <b 0xHEX> <t> <r N> <rc N> <rd N>
-    pub template: Vec<CpsToken>,
-    /// Допустимый диапазон размеров пакетов
-    pub size_range: (usize, usize),
-}
-
-pub enum CpsToken {
-    /// Фиксированные байты (magic number протокола)
-    Bytes(Vec<u8>),
-    /// Текущий timestamp (4 bytes)
-    Timestamp,
-    /// N случайных байтов
-    Random(usize),
-    /// N случайных ASCII alphanumeric
-    RandomAlphaNum(usize),
-    /// N случайных цифр
-    RandomDigits(usize),
+pub trait CustomEndpoint: Send + Sync {
+    /// «Адреса» этого транспорта (для моста — идентификатор моста, не IP)
+    fn watch_local_addrs(&self) -> Watcher<Vec<CustomAddr>>;
+    /// Отправка датаграмм
+    fn create_sender(&self) -> Box<dyn CustomSender>;
+    /// Приём датаграмм
+    fn poll_recv(&self, cx: &mut Context<'_>, bufs: &mut [IoSliceMut<'_>], metas: &mut [RecvMeta])
+        -> Poll<io::Result<usize>>;
 }
 ```
 
-**Как работает:**
-
-1. Исходящий пакет оборачивается в CPS-заголовок перед отправкой
-2. DPI видит пакет, соответствующий сигнатуре DNS/QUIC/SIP
-3. Принимающая сторона снимает CPS-заголовок и обрабатывает QUIC пакет
-4. Параметры CPS синхронизируются при handshake
-
-### 11A.5 REALITY-like Transport (защита от active probing)
-
-TCP-level selective proxy — самый эффективный метод против GFW-уровня DPI.
-Сервер действует как **TCP-прокси**: парсит ClientHello, проверяет Session ID,
-и либо обслуживает Aira клиента, либо прозрачно проксирует к реальному бэкенду.
-
-```
-Клиент                     Сервер Aira                   Реальный сайт (apple.com)
-  |                           |                              |
-  |--- TLS ClientHello ------>| (SNI: apple.com)             |
-  |   Session ID[0..8] =     |                              |
-  |   BLAKE3("aira/reality/  |                              |
-  |    sid/0", PSK)[0..8]    |                              |
-  |                           |-- Парсинг Session ID ---     |
-  |                           |                              |
-  | [Аира клиент — short_id верен]:                          |
-  |<-- TLS ServerHello -------|  (ephemeral self-signed cert)|
-  |<-- TLS Certificate -------|  (клиент: AcceptAnyCert)    |
-  |--- TLS Finished --------->|                              |
-  |   [TLS 1.3 туннель]      |                              |
-  |--- [0xA1][nonce][MAC] --->|  Аира аутентификация        |
-  |<-- [0xA2][nonce] ---------|  (BLAKE3-MAC + PSK)         |
-  |=== Аира данные (XOR) ===>|  Framed XOR keystream       |
-  |                           |                              |
-  | [Active probe — short_id неверен]:                       |
-  |                           |--- ClientHello (forward) --->|
-  |                           |<--- ServerHello + Cert ------|
-  |<-- (TCP proxy) -----------|<--- (TCP proxy) ------------|
-  |   DPI видит настоящий     |   tokio::io::copy_bidi      |
-  |   apple.com трафик        |                              |
-```
-
-**Архитектура:**
-
-1. **ClientHello parsing** — сервер парсит TLS Record Layer на уровне TCP,
-   извлекает Session ID (байты 44..76 сырого TLS record)
-2. **Short ID** — первые 8 байт `BLAKE3("aira/reality/sid/0", PSK)`,
-   клиент внедряет их в Session ID поле ClientHello
-3. **Аутентификация** — если short_id верен, сервер генерирует ephemeral
-   self-signed cert (`rcgen`), завершает TLS 1.3 handshake, затем
-   Aira BLAKE3-MAC аутентификация внутри TLS туннеля
-4. **Active probing fallback** — если short_id неверен, сервер открывает
-   TCP к реальному бэкенду (apple.com:443), пересылает ClientHello и
-   запускает `copy_bidirectional` — пробер получает настоящий apple.com
-
-**Криптография:**
-
-- Browser fingerprint mimicry (Chrome/Firefox/Safari cipher suite ordering)
-- `AcceptAnyCertVerifier` на клиенте — TLS только для DPI камуфляжа,
-  аутентификация через PSK + BLAKE3-MAC
-- Session ID patching — перехват сырых TLS байтов для внедрения short_id
-- KDF контексты: `aira/reality/sid/0`, `aira/reality/auth/0`,
-  `aira/reality/session/0`
-
-**Защита от угроз:**
-
-| Угроза | Митигация |
-|--------|-----------|
-| Passive DPI | TLS 1.3 ClientHello с browser fingerprint |
-| Active probing | Настоящий apple.com контент через TCP proxy |
-| SNI/IP mismatch | Пробер подтверждает: IP отвечает как apple.com |
-| Replay attack | Timestamp ±60s + random nonce |
-| Session ID brute force | 8 байт = 2^64 вариантов, BLAKE3 KDF |
-
-### 11A.6 Интеграция с iroh
-
-iroh поддерживает `CustomTransport` trait — произвольная обёртка
-над async streams. Интеграция:
-
-```rust
-// aira-net/src/transport/mod.rs
-
-pub trait AiraTransport: Send + Sync {
-    /// Оборачивает исходящее соединение в выбранный транспорт
-    async fn wrap_outbound(
-        &self,
-        stream: impl AsyncRead + AsyncWrite + Send,
-        target: &NodeId,
-    ) -> Result<impl AsyncRead + AsyncWrite + Send>;
-
-    /// Принимает входящее соединение
-    async fn accept_inbound(
-        &self,
-        stream: impl AsyncRead + AsyncWrite + Send,
-    ) -> Result<impl AsyncRead + AsyncWrite + Send>;
-}
-
-// Реализации:
-pub struct DirectTransport;       // без обфускации
-pub struct Obfs4Transport;        // ptrs obfs4/o5
-pub struct MimicryTransport;      // CPS protocol mimicry
-pub struct RealityTransport;      // REALITY-like TLS camouflage
-pub struct TorTransport;          // через arti
-pub struct CdnRelayTransport;     // через Cloudflare Worker
-```
+Это **датаграммы, не байтовые потоки**: QUIC живёт в UDP-датаграммах, поэтому обёртки над
+`AsyncRead + AsyncWrite` (старый трейт `AiraTransport`) к iroh неприменимы по построению. Мост Aira =
+`CustomTransport`, который шифрует каждую датаграмму PSK-ключом и шлёт её на UDP-адрес моста; на стороне
+моста — обратная операция и передача в локальный iroh-endpoint (роль `bridge`, §5.5.3). Транспорт заменяем
+без изменения onion-слоя (урок Snowflake).
 
 ### 11A.7 Зависимости
 
 ```toml
-# Pluggable transports
-ptrs = "0.8"              # obfs4/o5 (pure Rust PT framework)
-
-# Опциональные (feature flags):
-# arti-client = "0.27"   # Tor transport (feature = "tor")
-# hysteria2 = "0.1"      # Hysteria 2 QUIC masquerade (feature = "hysteria")
+# M24c
+iroh = { version = "1.2", features = ["unstable-custom-transports"] }
+# ptrs / arti-client / hysteria2 — не используются (удалены вместе с transport/*; optional-deps
+# reqwest, rustls, tokio-rustls, webpki-roots, rcgen, tokio-socks уходят из aira-net)
 ```
 
 ### 11A.8 UX
 
+Выбор транспорта из UI **убран до M24c** (сейчас `SetTransportMode ≠ direct` → `Error("not supported")`,
+пункт скрыт). Вместо него — профили и мост от контакта:
+
 ```
-> aira config transport
-
-  Режим транспорта:
-    [1] Прямой (без обфускации) — лучшая скорость
-    [2] Обфускация (obfs4) — умеренная цензура
-    [3] Мимикрия (QUIC/DNS/SIP) — продвинутая цензура
-    [4] REALITY — максимальная защита от DPI
-    [5] Tor — максимальная анонимность
-
-> 3
-
-  Мимикрия под:
-    [1] DNS запросы
-    [2] QUIC/HTTP/3
-    [3] SIP (VoIP)
-    [4] STUN (WebRTC)
-
-> 2
-  ✓ Транспорт: мимикрия под QUIC/HTTP/3
-  Для собеседника настройка применится автоматически.
+Settings → Network
+  Профиль:   privacy (по умолчанию: hide_ip, relay-only; после M24b — onion standard)
+             fast    (прямые соединения с контактами, которым вы это разрешили)
+  Мост:      «получить мост от контакта» (BridgeOffer) / вставить из ссылки        — M24c
+  Регион:    авто-hidden по strict-списку; override в Advanced с предупреждением     — M24c
 ```
 
-CLI команда: `/transport <mode>` — переключение режима
+Per-contact: «Разрешить прямое соединение с этим контактом» (раскрывает IP этому контакту).
+CLI: `/net profile <privacy|fast>`, `/bridge add <offer>`; `/transport <mode>` удалена.
 
 ---
 
@@ -299,7 +175,7 @@ CLI команда: `/transport <mode>` — переключение режим�
 
 ### 11B.1 Connection Tiers — приоритизация соединений
 
-Все входящие соединения делятся на 3 уровня:
+Все входящие соединения делятся на уровни:
 
 ```
 Tier 1 — Verified contacts (в контакт-листе)
@@ -309,6 +185,10 @@ Tier 1 — Verified contacts (в контакт-листе)
 Tier 2 — Known peers (были handshake, не в контактах)
   → Rate limit: 100 msg/min, 10 connections
   → Дропаются при перегрузке после Tier 3
+
+Tier 3+ — Strangers with ContactStamp (незнакомец с действующим штампом; план, M22)
+  → Rate limit как у Tier 3, но приоритет в очереди ContactRequest / intro-mailbox
+    и скидка к базовой сложности HopSetup (§5.5.13)
 
 Tier 3 — Strangers (неизвестные ноды)
   → Rate limit: 5 msg/min, 2 connections
@@ -339,17 +219,48 @@ impl Default for PeerLimits {
 }
 ```
 
+> ⚠️ `PeerLimits`/`PeerTier`/`ConnectionManager` есть в коде, но ни к чему не подключены (мёртвый код);
+> точка подключения — `EndpointHooks::{before_connect, after_handshake}` iroh 1.2 (M22), та же, что
+> инвариант AP-2 для хопов.
+
+**`ContactStamp` — tier для незнакомцев** (план, M22; аудит §5.3.1, решение владельца C16 — вместо идеи
+«уровень надёжности по префиксу ключа», см. п. 11B.10):
+
+```rust
+// aira-core/src/spam.rs
+/// Hashcash-штамп над псевдонимом. Проверяется кем угодно офлайн.
+pub struct ContactStamp {
+    pub epoch: u32,   // неделя; валидны текущая и предыдущая
+    pub bits: u8,     // ведущие нули
+    pub nonce: u64,
+}
+// valid ⇔ leading_zeros(BLAKE3("aira/contact-stamp/v1" ‖ pseudonym_pk ‖ epoch ‖ bits ‖ nonce)) ≥ bits
+```
+
+- **Истекает** (epoch = неделя) — приоритет нельзя купить навсегда; **per-pseudonym** — не линкует псевдонимы
+  (§12.6); **не меняет ключ и seed** — после восстановления из фразы пересчитывается в фоне; мобильный
+  выбирает меньший `bits`.
+- Прикладывается к `InvitationLink`, `ContactRequest` (§13.2) и `NodeRecord` хопа (§5.5.4); UI — бейдж
+  «дорогой контакт» без цифр.
+- Настоящий уровень доверия даёт не вычисление, а граф и поведение: контакт (Tier 1) > контакт контакта
+  (интродукция) > незнакомец со штампом > незнакомец без штампа; для хопов — наблюдаемый uptime.
+
 ### 11B.2 Adaptive Client Puzzles
 
 Перед PQ handshake незнакомая нода должна решить puzzle. Сложность
 адаптируется к текущей нагрузке:
 
 ```
-Нагрузка < 50%:  puzzle 16 бит (~1 ms)
-Нагрузка 50-80%: puzzle 20 бит (~16 ms)
-Нагрузка 80-95%: puzzle 24 бит (~256 ms)
-Нагрузка > 95%:  puzzle 28 бит (~4 сек) + отклонение Tier 3
+Нагрузка < 50%:  puzzle 16 бит (≈ 10 мс)
+Нагрузка 50-80%: puzzle 20 бит (≈ 0,1–0,2 с)
+Нагрузка 80-95%: puzzle 24 бит (≈ 2–3 с)
+Нагрузка > 95%:  puzzle 28 бит (≈ 30–50 с) + отклонение Tier 3
 ```
+
+> ⚠️ **Времена — оценка, пересчитать по criterion-бенчу M19a.** Прежняя таблица (16 бит ≈ 1 мс … 28 бит ≈ 4 с)
+> была занижена в 5–10×: реальный однопоточный BLAKE3 на коротком входе ≈ 5–10 MH/s → 16 бит ≈ 10 мс,
+> 20 ≈ 0,1–0,2 с, 24 ≈ 2–3 с, 28 ≈ 30–50 с на desktop; телефон ×5, WASM ×3–5. Та же функция сложности и
+> `slot` (10-минутное окно) — общая для `ContactRequest`, intro-mailbox и `HopSetup` (M22).
 
 ```rust
 pub struct AdaptivePuzzle {
@@ -359,6 +270,8 @@ pub struct AdaptivePuzzle {
     pub server_nonce: [u8; 16],
     /// Timestamp (puzzle истекает через 30 секунд)
     pub issued_at: u64,
+    /// M22: slot = 10-минутное окно — решение из другого окна невалидно (replay)
+    pub slot: u32,
 }
 
 impl AdaptivePuzzle {
@@ -367,12 +280,17 @@ impl AdaptivePuzzle {
         if now - self.issued_at > 30 { return false; } // expired
         let hash = blake3::hash(&[
             &self.server_nonce[..],
+            &self.slot.to_le_bytes(),
             &client_nonce.to_le_bytes(),
         ].concat());
         leading_zeros(hash.as_bytes()) >= self.difficulty as u32
     }
 }
 ```
+
+> ⚠️ Текущий `ContactRequest::to_pow_bytes = from ‖ message ‖ difficulty` (`spam.rs`) не содержит nonce
+> получателя и времени — одно решение переиспользуется бесконечно (precomputation / replay). В M22 —
+> `recipient_pubkey ‖ server_nonce ‖ slot ‖ request`.
 
 **Почему это работает:** легитимный пользователь решает puzzle один раз
 при добавлении контакта. Атакующий должен решать для каждого соединения,
@@ -387,7 +305,7 @@ impl AdaptivePuzzle {
 iroh/QUIC предоставляет встроенные механизмы:
 
 ```rust
-// aira-net/src/endpoint.rs — конфигурация QUIC
+// aira-net/src/endpoint.rs — конфигурация QUIC (план, M19)
 
 let mut transport = quinn::TransportConfig::default();
 // Ограничение потоков на соединение
@@ -403,11 +321,21 @@ transport.max_idle_timeout(Some(Duration::from_secs(30).try_into().unwrap()));
 transport.retry_token_lifetime(Duration::from_secs(15));
 ```
 
+> ⚠️ **В коде эти лимиты не выставлены** (M19): `AiraEndpoint::bind` использует дефолты QUIC-стека,
+> `read_framed` выделяет 256 KB по заголовку (128 стримов × 256 KB = 32 MB на соединение), число
+> соединений не ограничено, и нет ни одного таймаута (connect, `read_framed`, ответ на handshake, запрос
+> к relay). M19: connect 5 с / idle 30 с / ответ relay 10 с; 16/32 стрима; окна 256/64 KB; инкрементальное
+> выделение буфера.
+
 **Amplification limit:** QUIC ограничивает ответ до 3x размера запроса
 до подтверждения адреса (Retry token). Атакующий не может использовать
 ноду как усилитель.
 
-### 11B.4 DHT anti-Sybil
+### 11B.4 DHT anti-Sybil (после релиза)
+
+DHT — **после релиза** (решение владельца A3); discovery в релизе = pkarr через собственный
+`iroh-dns-server` (§5.2b). Ниже — требования к DHT, если она появится; anti-Sybil для хопов Aira Onion —
+§5.5.8 (proof-by-use, guard-персистентность, вес по uptime), для каталога relay — §5.3.
 
 DHT — наиболее уязвимый компонент к Sybil-атаке (атакующий создаёт
 тысячи фейковых нод и заполняет таблицу маршрутизации):
@@ -417,7 +345,7 @@ DHT — наиболее уязвимый компонент к Sybil-атаке
 a) **IP diversity:** максимум 2 ноды из одной /16 подсети в routing table.
 Атакующий с одного диапазона IP не может занять всю таблицу.
 
-b) **Signed DHT records:** каждая запись `ML-DSA_pubkey → NodeId` подписана
+b) **Signed DHT records:** каждая запись `ML-DSA_pubkey → EndpointId` подписана
 ML-DSA ключом. Фейковые записи отбрасываются при проверке подписи.
 
 c) **PoW для DHT publish:** публикация записи в DHT требует PoW (16 бит).
@@ -427,79 +355,128 @@ d) **TTL + refresh:** записи истекают через 24 часа. Но
 переопубликовать. Устаревшие записи автоматически удаляются.
 
 e) **Fallback на direct add:** DHT опционален. Если DHT скомпрометирован —
-пользователи обмениваются ключами напрямую (hex-строка / QR).
+пользователи обмениваются ключами напрямую (invitation link / QR).
 
 f) **Anchor connections:** daemon поддерживает 3-5 долгоживущих соединений
-с проверенными нодами (bootstrap + контакты). Это предотвращает
+с проверенными нодами (якоря проекта + контакты). Это предотвращает
 eclipse attack — полную изоляцию ноды фейковыми пирами.
 
-### 11B.5 Relay anti-flood
+### 11B.5 Relay anti-flood (mailbox v2; план, M21)
 
-Relay хранит зашифрованные конверты для офлайн пользователей. Защита:
+Relay хранит зашифрованные конверты для офлайн пользователей (§6.3b). Защита строится на
+**регистрации коробок владельцем и квотах**, а не на PoW на депозит:
 
 ```
-Per-identity квоты:
-  - 10 MB max на mailbox (ring buffer — старые вытесняются)
-  - 100 сообщений max на mailbox
-  - 30 deposits/min на отправителя
-  - PoW (16 бит) на каждый deposit от не-контактов
+На коробку:
+  - Register только с подписью owner_sk (+ токен scope: MAILBOX); без Register коробки нет (AP-6)
+  - 100 конвертов / 10 MB (вытеснение старых → owner видит пропуск по seq)
+  - конверт ≤ 64 KB (MAX_ENVELOPE_SIZE, §6.22)
+  - TTL 7 дней на конверт (received_at), не на коробку
+  - Deposit — подпись sender_sk[dir] + relay_nonce; PoW не нужен
 
-Per-relay лимиты:
-  - 1 GB total storage cap
-  - GC каждые 6 часов: удаление expired (TTL 7 дней)
-  - Приоритет: mailbox'ы с недавним retrieve > заброшенные
+На клиента (EndpointId / токен):
+  - Register ≤ 20/сутки
+  - Deposit ≤ 100 целей за запрос; N ≤ 3 реплик на конверт
+  - intro-mailbox: только ContactRequest с PoW ≥ 20 бит над relay_nonce ‖ slot ‖ request
+    (адаптивно до 28), rate limit по EndpointId; только на anchor / server
+
+На relay:
+  - total cap 1 GB (при N-of-2 эффективная ёмкость вдвое ниже)
+  - GC каждый час: expired конверты; при переполнении — коробки без Retrieve дольше всего
+  - max_clients + accept-лимит в AccessControl (accept_conn_limit iroh-relay — no-op), nginx limit_conn
+  - push: только push_allowlist, ≤ 1/мин на коробку, без редиректов / приватных диапазонов
+  - лимиты публикуются в RelayHello.limits и .well-known/aira-relay.json
 ```
 
 ```rust
 pub struct RelayQuota {
+    pub max_envelope: usize,            // 64 KB — из aira-core MAX_ENVELOPE_SIZE
     pub max_mailbox_size: usize,        // 10 MB
-    pub max_messages_per_mailbox: u32,  // 100
-    pub deposit_rate: Quota,            // 30/min
-    pub pow_difficulty: u8,             // 16 бит для не-контактов
+    pub max_envelopes_per_mailbox: u32, // 100
+    pub envelope_ttl: Duration,         // 7 дней на конверт
+    pub registers_per_day: u32,         // 20 на EndpointId
+    pub intro_pow_min_bits: u8,         // 20 (адаптивно до 28)
     pub total_storage_cap: usize,       // 1 GB
-    pub ttl: Duration,                  // 7 дней
+    pub max_clients: u32,
+    pub push_allowlist: Vec<String>,
 }
+```
+
+Депозит от onion-хопа (M24b): лимиты считаются по `sender_pk` / коробке, **не** по IP / `EndpointId`
+депозитора (AP-5) — хоп нельзя и незачем наказывать за чужой депозит.
+
+**Бюджеты хопов** (план, M24b; нормативно — §5.5.5):
+
+```
+На ключ (key_id, выдан за PoW через HopSetup, живёт 24 ч):
+  - 8 MB / 24 ч, 16 KB/s, одна очередь; окно anti-replay 1 024 бит по counter
+  - PoW: base 16 бит + f(заполнение таблицы, утилизация share), до 24; > 95 % → Busy
+  - slot = 10-мин окно (precomputation / replay невозможны)
+  - ≤ 8 ключей на источник у guard'а — «1 GB через сеть» = ≥ 125 ключей с ≥ 16 источников,
+    ≥ 17 ч на одном ключе; каждый байт стоит сети ×3
+
+На ноду (share):
+  - desktop unmetered: 32 KB/s исходящих на форвардинг, 3 GB/мес (настраивается; решение C10)
+  - laptop-battery: ×0.25; desktop-nat: вес ×0.3 при выборе; mobile: 0 (только клиент)
+  - DRR между ключами; при перегрузке — Busy новым, пропорциональное урезание существующим
+  - таблица ключей ≤ 50 000 (≈ 5 MB), LRU
+
+PoW-ключи и скидки:
+  - guard_proof (своя NodeRecord с caps.hop) — базовая сложность; без него +4 бита; ЗАПРЕЩЁН на middle
+  - ContactStamp (п. 11B.1) — скидка вместо guard_proof для нод без роли hop
+  - ноды, объявившие hop и не форвардящие, выпадают из peer exchange (proof-by-use)
 ```
 
 ### 11B.5.1 Relay protocol versioning и миграция
 
 > ⚠️ Урок SimpleXMQ: v1 → v2 несовместимы, миграция требует
 > деплоя нового сервера и потери всех mailbox'ов на старом.
+> ⚠️ В коде (mailbox v1) ничего из этого раздела нет — утверждение «заложено в wire format»
+> прежней редакции было неверным. Реализуется в M21 сразу как v2; v1 (`aira/1/relay`) удаляется
+> без совместимости (в проде его никто не использует).
 
 **Версионирование relay протокола:**
 
 ```rust
-pub const RELAY_PROTOCOL_VERSION: u16 = 1;
+pub const RELAY_PROTOCOL_VERSION: u16 = 2;
 
-/// Handshake relay ↔ client
+/// Handshake relay ↔ client (первое сообщение relay → клиент, §6.3b)
 pub struct RelayHello {
-    pub protocol_version: u16,
+    pub protocol_version: u16,          // 2
     pub supported_versions: Vec<u16>,
     pub capabilities: RelayCapabilities,
+    pub relay_nonce: [u8; 32],          // challenge на сессию — во все подписи запросов
+    pub catalog_class: RelayClass,      // anchor | server | server-pinned | client (§5.3)
+    pub operator_id: [u8; 32],          // хэш ключа оператора — правило «разные операторы» (п. 11B.7)
+    pub min_client_version: Version,    // клиент отклоняет relay ниже min_relay_version каталога
+    pub limits: RelayLimits,            // envelope_max, per-box, ttl — источник правды для клиента
 }
 
 bitflags! {
     pub struct RelayCapabilities: u32 {
         const STORE_FORWARD = 1 << 0;
-        const PUSH_NOTIFY   = 1 << 1;  // v0.3
-        const MULTI_DEVICE  = 1 << 2;  // v0.3
+        const PUSH_NOTIFY   = 1 << 1;  // UnifiedPush по push_allowlist
+        const INTRO         = 1 << 2;  // intro-mailbox (только anchor / server)
+        const ONION_HOP     = 1 << 3;  // M24b
+        const MULTI_DEVICE  = 1 << 4;  // M26 (device_id в Register)
     }
 }
 ```
 
-**Миграция при смене relay:**
+**Миграция при смене хоста коробок:**
 
-1. Пользователь выбирает новый relay
-2. Регистрирует mailbox на новом relay (с тем же `mailbox_id`)
-3. Отправляет контактам подписанное сообщение `RelayMigration { new_relay_id }`
-4. Контакты обновляют relay для этого mailbox
-5. Старый relay продолжает работать N дней (grace period)
-6. После grace period — mailbox на старом relay удаляется
+1. Пользователь (owner) выбирает новый mailbox-хост из каталога (другой оператор, §5.3)
+2. Регистрирует коробки на новом хосте (`Register`, те же `mailbox_id`)
+3. Отправляет контактам подписанное сообщение `MailboxMigration { mailboxes: Vec<MailboxRef>, issued_at }`
+   (E2E, внутри чата; прежнее имя — `RelayMigration`)
+4. Контакты обновляют `MailboxConfig.mailboxes` для этого контакта
+5. Старый хост продолжает работать N дней (grace period), owner делает `Retrieve` с обоих
+6. После grace period — `Delete` на старом хосте
 
-**Отказоустойчивость:** пользователь может зарегистрировать один mailbox
-на **нескольких relay** одновременно. Отправитель пробует по приоритету.
-Это критично для надёжности — если один relay упал, сообщения доходят
-через второй.
+**Отказоустойчивость:** коробки живут на **2–3 хостах разных операторов** одновременно (`MailboxConfig.mailboxes`,
+§6.3b); отправитель депонирует N-of-2, получатель забирает со всех с дедупом по `envelope_id`. Если один
+хост упал, сообщения доходят через второй. Транспортный iroh-relay резервируется иначе — re-home по
+watchdog (§5.1.1), у iroh один home relay на endpoint.
 
 ### 11B.6 Flood protection в личных чатах
 
@@ -529,7 +506,7 @@ Eclipse attack — атакующий заполняет все соединен
 a) **Subnet diversity:** максимум 2 peer из одной /16 подсети.
 Одновременно: минимум 3 разных /16 в connection table.
 
-b) **Anchor connections:** 3-5 hardcoded соединений с bootstrap нодами
+b) **Anchor connections:** 3-5 соединений с якорями проекта (anchor-relay, §5.3)
 и проверенными контактами. Эти соединения никогда не вытесняются.
 
 c) **Connection table protection:** новые ноды не могут вытеснить
@@ -538,6 +515,11 @@ c) **Connection table protection:** новые ноды не могут выте
 
 d) **Мониторинг:** daemon логирует аномалии (резкий рост новых
 соединений, потеря всех anchor'ов). Уведомление пользователю.
+
+e) **Разные операторы и AS для relay и хопов:** home relay и 2–3 mailbox-хоста — не более одного
+на `operator_id` (из `RelayHello` / каталога), IPv4 `/24`, IPv6 `/48` (§5.3); guard, middle и H одного
+onion-маршрута — разные /16 и (если есть данные) разные AS, для `hidden`-клиента — не из своей страны
+(§5.5.8); якоря проекта — минимум два региона. Один оператор не должен видеть и вход, и выход маршрута.
 
 ### 11B.8 Graceful degradation
 
@@ -563,6 +545,31 @@ Load Level  | Действие
 governor = "0.8"          # GCRA rate limiter (keyed, atomic)
 ```
 
+### 11B.10 Стоимость identity
+
+Вердикт аудита (§5.3, §5.3.1) и решение владельца 24.09 (C12, C16): **PoW на ключ — grinding identity /
+fingerprint, «уровень надёжности по префиксу ключа» — не делаем.** Причины:
+
+1. **Амортизация:** одна identity = бесконечный спам после единственного платежа; бот-ферма платит один раз
+   (на GPU в 50–1000× дешевле, чем жертва на телефоне) и дальше бесплатна.
+2. **DDoS relay от identity не зависит:** iroh-relay / QUIC атакуют пакетами с бесплатных Ed25519
+   `EndpointId`; ML-DSA identity в этом пути не участвует.
+3. **Детерминизм seed → identity:** grinding должен быть детерминированным перебором `counter` от seed, иначе
+   фраза не восстанавливает аккаунт — значит при каждом восстановлении пользователь снова ждёт минуты
+   (ML-DSA-65 keygen ≈ 50–100 µs → 24 бита ≈ 20–30 мин на десктопе, телефон ×5–10).
+4. **Контакты не видят identity-ключ:** по §12.6 каждому контакту выдаётся свой псевдоним; общий префикс у
+   псевдонимов одного человека **линкует** их.
+5. **Видимый префикс ломает верификацию:** пользователи сверяют fingerprint по первым символам; одинаковые
+   «дорогие» префиксы дают бесплатную похожесть (vanity-адреса onion v3). Fingerprint должен быть случайным.
+6. **Приоритет по цене ключа — купленный навсегда приоритет** для фермы; Tor отверг такой дизайн ради
+   адаптивного per-connection PoW (hspow).
+
+**Вместо этого — цена каждого действия + contact-first (§13.1):** адаптивный PoW с `server_nonce ‖ slot` на
+`ContactRequest`, intro-mailbox и `HopSetup` (общая функция сложности, M22); `Register` ≤ 20/сутки;
+квоты relay (п. 11B.5); tiers (п. 11B.1). Публично проверяемый сигнал стоимости — **`ContactStamp`**
+(п. 11B.1): штамп над псевдонимом, истекает, не меняет ключ. Argon2id 256 MB на seed остаётся защитой фразы
+от brute force, не anti-Sybil. Privacy Pass rate-limited tokens (issuer = relay) — после релиза.
+
 ---
 
-## 12. Групповые чаты (v0.2)
+> §12 «Групповые чаты» — `spec/14-groups.md`.
