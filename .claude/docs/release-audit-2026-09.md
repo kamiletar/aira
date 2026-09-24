@@ -518,7 +518,7 @@ Milestone 9.6 не начат ни в одной фазе. Но главные �
 9. **§5.3 bootstrap-ноды «зашиты в бинарник» и §5.2b DHT** — в коде нет, discovery целиком на n0. После 30.09.2026 без своего pkarr/DNS discovery узлы не найдут друг друга даже при живом relay. → Переписать §5.2b/§5.3 под pkarr publish/resolve через собственный iroh-dns-server + relay-map; DHT — после релиза; spec/16-multidevice.md:40,57 «DHT-запись» → «pkarr/DNS-запись».
 10. **Ratchet/handshake v1 непригодны для «релиза с обещанием совместимости»** (C1–C7). → В §6.4 зафиксировать: релизный протокол = v2 (`min_version = max_version = 2`), v1 — pre-release без гарантий; описать `Message::Ratchet{header, envelope}` в §6.1 и PQXDH-транскрипт в §4.5.
 
-### 6.5.3 Устаревшие утверждения (править одним коммитом `docs(spec)`)
+### 6.5.3 Устаревшие утверждения (править одним коммитом `docs(spec)`) — ✅ выполнено 24.09.2026 (см. коммиты `docs(spec)`)
 
 - Версии: spec/12-dependencies.md:8 «iroh ~1.0, вышел из RC-серии 0.97+» vs :15 `iroh = "0.97"`; :21 ml-dsa «0.1 (≥0.1.0-rc.4)»; :20 ml-kem 0.2; :45 redb 2; spec/03-network.md:21-22, spec/01-overview.md:103, CLAUDE.md:14-16,110; spec/18-milestones.md:308-309 «опционально bump iroh → 1.0» (обязательно), :281 getrandom 0.3 (→ 0.4); habr_article.md:70-71,80-81,84. Цель: iroh 1.1 / iroh-blobs 0.103 / ml-dsa 0.1.1 / ml-kem 0.3 / redb 4 (или оставить 2.6 с обоснованием) / getrandom 0.4 / rust-version 1.91.
 - Версия спеки: spec/20-appendix.md:57 «Spec v0.4» vs SPEC.md:4 и spec/01-overview.md:4 «Версия 0.2, апрель 2026» → унифицировать (0.5, сентябрь 2026).
@@ -629,7 +629,9 @@ Milestone 9.6 не начат ни в одной фазе. Но главные �
 
 ## 8. Фаза 3 (код и инфраструктура) — сводка по темам A–F
 
-> Полные отчёты — `audit-2026-09/<файл>` (агенты пишут их сами). Здесь только выжимка; статус тем — `audit-2026-09/NEXT-SESSION.md`. Заполняется по мере завершения агентов.
+> Полные отчёты — `audit-2026-09/<файл>`. Здесь только выжимка; статус тем — `audit-2026-09/NEXT-SESSION.md`.
+> **24.09.2026: все правки планов из §8.1–§8.7 внесены в `spec/18-milestones.md` (M18–M28) и разделы спеки; решения владельца —
+> `audit-2026-09/owner-decisions.md`.** Ниже — состояние на момент написания выжимок.
 
 ### 8.1 Security-compliance по workspace (`security-compliance-audit.md`, raw `raw/a1c5b7cca4e37a69a.json`)
 
