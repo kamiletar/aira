@@ -21,7 +21,7 @@
 | A10 | `pseudonym_counter` разбить по `device_index` (key isolation на двух устройствах) | да, до M19b | §8.5 D3 |
 | A11 | Группы, мультидевайс, Bot API в бете — отключить честно (UI скрыть, запросы → `Error`) | да; резервы в M19a/M21 (≈ 4 дня) | §8.5 |
 | A12 | Шифровать файлы ≥ 1 MB per-file ключом из ratchet в M19a (1–2 дня) или бета с оговоркой «файлы не PQ-защищены» | шифровать | §8.2 (1) |
-| A13 | `transport/*` (REALITY/obfs/mimicry/CDN/Tor) — удалить из main или ветка `experimental/transports`; REALITY переработать или исключить | удалить/исключить; идея обфускации возвращается как `CustomTransport` в M24c | §8.1 (1), §8.2 (2) |
+| A13 | `transport/*` (REALITY/obfs/mimicry/CDN/Tor) — удалить из main или ветка `experimental/transports`; REALITY переработать или исключить | удалить/исключить; идея обфускации возвращается как `CustomTransport` в M24d | §8.1 (1), §8.2 (2) |
 | A14 | `publish_direct_addrs` (AddrFilter) в pkarr — публиковать прямые IP или только relay | только relay (дефолт iroh) | §8.2 (3) |
 | A15 | Workspace-линты (`unwrap_used/panic/todo = deny`) — в M18 или M23 | M18 (после отката Cargo.toml) | §8.1 (4) |
 | A16 | Фичи `zeroize` у ml-kem/ml-dsa/x25519 и rand 0.8/0.9 в `rustcrypto.rs` — проверить при bump | — | §8.1 |
@@ -57,11 +57,11 @@
 | C1 | Группы v2 (M25) до 1.0 (+3–4 нед., аудит покроет `group.rs`) или после с отдельным аудитом | до 1.0, если группы — часть продукта 1.0 | §8.5 (1) |
 | C2 | Подпись групповых конвертов: ML-DSA-65 псевдонимом (3,3 KB/сообщение, PQ) или Ed25519 per sender key (64 Б) | Ed25519 per sender key + AAD; PQ-вариант позже | §8.5 (2) |
 | C3 | Мультидевайс: per-device сессии (Sesame) или handoff с арендой — определяет `device_id` в M21 `Register` | per-device (Sesame) | §8.5 (3) |
-| C4 | Aira Onion (M24b) до 1.0 или после | до 1.0 (иначе внешний аудит смотрит не тот протокол) | §8.7, G §8 |
+| C4 | Aira Onion (M24c) до 1.0 или после | до 1.0 (иначе внешний аудит смотрит не тот протокол) | §8.7, G §8 |
 | C5 | Вторая iroh-идентичность под роль хопа (второй `Endpoint`) | да | G §9.2 |
 | C6 | Strict-список стран для авто-hidden mode (старт — список I2P: RU, CN, IR, …) и кто его ведёт | список в репозитории, обновление с релизами | G §9.3 |
 | C7 | Мобильные — только клиент (не хоп, не мост) | да | G §9.4 |
-| C8 | Профиль по умолчанию после M24b: `standard` (2+M+2) или `fast` (1+M+1) | standard | G §9.5 |
+| C8 | Профиль по умолчанию после M24c: `standard` (2+M+2) или `fast` (1+M+1) | standard | G §9.5 |
 | C9 | Файлы в standard/mix: «медленная полоса» ≤ 10 MB + direct с предупреждением, или только direct | медленная полоса + direct | G §9.6 |
 | C10 | Дефолты share хопа (32 KB/s, 3 GB/мес desktop) и счётчик «вы помогли сети на N MB» | принять, счётчик показывать | G §9.7 |
 | C11 | Имя фичи: «Aira Onion» / «скрытый маршрут» | — | G §9.9 |
@@ -70,8 +70,32 @@
 | C14 | `cargo check -p aira-net --all-features` в CI, если транспорты не удаляются | не нужен при A13 | §8.2 (4) |
 | C15 | Что из §6.x обязательно в бете сверх TTL и block (реакции, receipts, typing, профили) | только TTL + block; остальное — M28 | §8.5 |
 
-## D/F — дописать после §8.4 и §8.6
+## D. CI/CD и supply chain (§8.4)
 
-- CI/supply chain (D): пины SHA, attestations/SBOM/cargo-auditable, keystore и secrets, dependabot — см. §8.4.
-- Community relays (F): кто подписывает каталог relay; домен для поддоменов операторов; включать ли mailbox в
-  клиент-relay; встроенный iroh-relay с self-signed сертификатом (pin) для нод без домена — см. §8.6.
+| # | Решение | Рекомендация | Где |
+|---|---|---|---|
+| D1 | Настройки репо: права `GITHUB_TOKEN` по умолчанию, allowed actions, fork-approval, rulesets `main`/`v*`, Dependabot alerts, secret scanning, private vulnerability reporting | включить всё; `v*` только через CI-job `verify` | §8.4 (1) |
+| D2 | Кто хранит keystore Android и minisign-ключ (офлайн, бэкап ×2); ключ подписи нужен **до** регистрации developer verification | владелец, офлайн-носитель + бэкап | §8.4 (2) |
+| D3 | APK в v0.4.0 и бете — убрать из assets до подписи или публиковать unsigned | убрать | §8.4 (3) |
+| D4 | quick-xml (8 из 18 advisories) — временный ignore со сроком или блокировать M18 на bump egui 0.36 | ignore со сроком (до M19b), bump в M19b | §8.4 (4) |
+| D5 | Linux baseline — контейнер ubuntu:22.04 или объявить glibc ≥ 2.39 в INSTALL.md | контейнер 22.04 | §8.4 (6) |
+| D6 | CI-инфраструктура — в M23 по спеке или отдельный трек «M22-infra» параллельно M19 | отдельный трек, гварды уже в M18 | §8.4 (7) |
+| D7 | SLSA L2 для беты (attest-build-provenance), L3 (reusable workflow) к 1.0 | да | §8.4 (8) |
+| D8 | `environment: release` с ручным approve на каждый релиз | да | §8.4 (9) |
+| D9 | Ветка `dev` — завести или убрать из правил/CI (сейчас в триггерах несуществующие `dev`, `milestone/M10-*`) | убрать, работать через PR в `main` | §8.4 (10) |
+| D10 | LICENSE-MIT/LICENSE-APACHE + README до тега v0.4.0 (условие SignPath) | да, в M18 | §8.4 B3 |
+
+## F. Community relays (§8.6)
+
+| # | Решение | Рекомендация | Где |
+|---|---|---|---|
+| F1 | Кто подписывает каталог relay: один офлайн-ключ ML-DSA-65 или 2-of-3; периодичность; автоподпись client-брокера делегированным ключом | 2-of-3 к 1.0, один ключ на старте; брокер — делегированный ключ с коротким сроком | §8.6 (1) |
+| F2 | Поддомены операторов `<id>.r.<domain>` (нужен DNS-сервис с API) или «свой домен либо голый IP + pin» | «свой домен либо IP + pin»; поддомены позже | §8.6 (2) |
+| F3 | Mailbox в client-relay | нет | §8.6 (3) |
+| F4 | Client-relay как home relay — только opt-in/при блокировке anchor или по умолчанию | opt-in | §8.6 (4) |
+| F5 | Override гейта «строгая страна» через Advanced с предупреждением или запрет как в I2P | override с предупреждением | §8.6 (5) |
+| F6 | Ключ токенов допуска relay — Ed25519 или ML-DSA-65 | Ed25519 (токен живёт 24 ч) | §8.6 (6) |
+| F7 | Открытые relay (`access = "everyone"`) — не пускать в каталог или с пометкой | не пускать | §8.6 (7) |
+| F8 | Абьюз-контакт и юридический раздел `docs/RELAY.md` («relay не exit», аналогия Tor bridge) | написать в M21 п.9 | §8.6 (8) |
+| F9 | Android исключён из relay-режима | да (и из роли hop — §8.7) | §8.6 (9) |
+| F10 | Бюджет: второй anchor-VPS и `relays.<domain>` (каталог/токены/проба) до беты | да | §8.6 (10) |
