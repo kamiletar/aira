@@ -1,3 +1,6 @@
+// ИСТОРИЧЕСКИЙ СКРИПТ: фаза 3 (A–F) завершена 23–24.09.2026, отчёты лежат рядом; пути в промптах — Windows-машина владельца.
+// Повторный запуск не нужен; оставлен как запись формулировок заданий.
+
 export const meta = {
   name: 'aira-audit-phase3-sequential',
   description: 'Phase 3 of the Aira release audit: 5 code-level topics, strictly one agent at a time; each agent writes its own report file',
