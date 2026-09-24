@@ -1,5 +1,5 @@
 ---
-paths: "crates/aira-core/**", "crates/aira-storage/**"
+paths: "crates/aira-core/**", "crates/aira-storage/**", "crates/aira-net/**", "crates/aira-relay/**", "crates/aira-onion/**", "crates/aira-daemon/**"
 ---
 
 # Правила безопасности — Aira
@@ -89,6 +89,44 @@ use subtle::ConstantTimeEq;
 if computed_mac.ct_eq(&expected_mac).into() { ... }
 ```
 
+### 7. Секреты не попадают в Debug и логи
+
+```rust
+// ❌ derive(Debug) на типе с ключами — снапшот уйдёт в tracing/паники
+#[derive(Debug)]
+pub struct RatchetSnapshot { root_key: [u8; 32], ... }
+
+// ✅ Ручной Debug с [REDACTED]
+impl fmt::Debug for RatchetSnapshot {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("RatchetSnapshot").field("root_key", &"[REDACTED]").finish()
+    }
+}
+```
+
+Seed-фраза, ratchet-ключи, link-code, relay-токены — никогда в `tracing`, IPC-логах и сообщениях об ошибках.
+IP собеседников и EndpointId — не выше `debug`.
+
+### 8. Форвардинг чужих данных (relay, хопы, mailbox) — инварианты AP
+
+Любой код, который переносит или хранит чужие данные (`aira-relay`, `aira-onion`, `hop.rs`, роли relay/mailbox в клиенте),
+обязан соблюдать `spec/03-network.md` §5.5:
+
+- **AP-1** нет выхода в интернет: терминал маршрута — только mailbox/нода Aira; ни одного `connect(host:port)` по данным из пакета;
+- **AP-2** следующий хоп — только `EndpointId` из собственной таблицы, адрес из ячейки невалиден;
+- **AP-3** ячейки фиксированного размера, без потоков;
+- **AP-4** каждый байт под ключом с бюджетом (PoW-допуск, share ноды, fair queuing);
+- **AP-5** хоп не источник и не отвечает за содержимое; mailbox лимитирует по sender/owner, не по IP хопа;
+- **AP-6** хранилище только по `Register` владельца, квоты и TTL;
+- **AP-7** форвардинг включён по умолчанию там, где безопасен (desktop unmetered), выключен на мобильных/metered, hidden mode в strict-странах.
+
+Клиент **никогда** не регистрирует `RelayServer`/mailbox без явного opt-in пользователя. Push-URL mailbox — только по allowlist (SSRF).
+
+### 9. IP пользователя
+
+`hide_ip = true` по умолчанию (endpoint без IP-транспортов); invitation link и pkarr — без IP; хоп-идентичность — отдельный
+локальный ключ, не из seed; RelayMap клиента — только свои relay (net_report раздаёт IP всем relay из списка).
+
 ## Чеклист перед code review
 
 - [ ] Нет пересечений KDF-контекстов (docs/KEY_CONTEXTS.md актуален)
@@ -98,3 +136,6 @@ if computed_mac.ct_eq(&expected_mac).into() { ... }
 - [ ] Нет `unwrap()` в production путях
 - [ ] MAC/хэш сравнения через constant-time (subtle crate)
 - [ ] Fuzz targets обновлены при изменении парсинга
+- [ ] Типы с секретами — ручной `Debug` с `[REDACTED]`, нет секретов в `tracing`
+- [ ] Форвардящий код соблюдает AP-1…AP-7; нет `connect` по адресу из пакета
+- [ ] Нет IP в invitation link / pkarr / логах выше `debug`

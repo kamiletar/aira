@@ -20,7 +20,7 @@
 
 ```
 Seed Phrase (24 BIP-39 words)
-    ↓ Argon2id(m=256MB, t=3, p=4, salt="aira-master-v1")
+    ↓ Argon2id(m=256MB, t=3, p=4, salt="aira-master-v1-m256")   # профиль Mobile (m64, другая соль) удаляется — одна фраза = одна identity
 Master Seed (32 bytes)
     ├── BLAKE3-KDF("aira/identity/0")  → ML-DSA-65 Signing Key
     ├── BLAKE3-KDF("aira/x25519/0")   → X25519 Static Key
@@ -76,3 +76,12 @@ Alice                              Bob
 - **Phase 1 (v0.1-v0.2):** RustCrypto (ml-kem + ml-dsa) — pure Rust, быстрая итерация
 - **Phase 2 (v0.3+):** aws-lc-rs — FIPS 140-3 validated, production hardened
 - Абстракция: `CryptoProvider` trait в `crates/aira-core/src/crypto/mod.rs`
+
+## Протокол v2 (M19a) — что меняется относительно кода v0.3.5
+
+Находки C1–C7 аудита (`.claude/docs/audit-2026-09/core-audit.md`): wire не несёт заголовок ratchet и AEAD без AAD; decrypt не транзакционен;
+PQ-шаг ratchet никогда не стартует; handshake не PQXDH (нет ephemeral ML-KEM), подписи без SIGMA-binding и без EndpointId; PoW `ContactRequest`
+переиспользуем (нет nonce/timestamp). В v2: `Message::Ratchet { header, envelope }` с header как AAD; транзакционный decrypt; ephemeral ML-KEM в
+каждом handshake + `SignedPrekeyBundle { device_id, … }` для асинхронного старта через mailbox; EndpointId обеих сторон в подписываемых данных;
+per-file ключ `aira/file/key/v2`; PoW над `recipient_pubkey ‖ server_nonce ‖ slot ‖ request` с адаптивной сложностью; `ContactStamp`
+(hashcash над pseudonym_pk ‖ epoch, M22) вместо «PoW на ключ». Хоп-ключи onion (M24b): гибридный KEM раз в сутки, симметричные per-hop ключи.

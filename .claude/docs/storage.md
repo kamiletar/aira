@@ -53,3 +53,12 @@ let read_txn = db.begin_read()?;
 let table = read_txn.open_table(CONTACTS)?;
 let value = table.get(pubkey_bytes)?;
 ```
+
+## План M19 Phase A (аудит §8.1/§8.5, `daemon-storage-audit.md`)
+
+- `meta { schema_version }` + цепочка миграций; `ContactInfo` получает `endpoint_addr` **без IP** (только relay), `mailboxes: Vec<MailboxRef>`, `relays: Vec<RelayRef>`.
+- Инвариант: в `pending_messages` только `postcard(EncryptedEnvelope)` (сейчас fan-out групп кладёт plaintext и sender keys); лимиты 1000 сообщений / 100 MB на контакт; per-contact `seq`.
+- `encrypted.rs`: AAD = `table_name ‖ row_key`; `now_secs + ttl` — saturating; лимит импорта backup; backup VERSION 2 (+ `pseudonym_counter`).
+- `pseudonym_counter = device_index << 28 | local` (иначе два устройства повторяют контексты `aira/pseudonym/<n>/*`).
+- Права: `~/.aira` 0700, `aira.redb`/сокет 0600 (сейчас по umask).
+- Группы: таблица `group_sender_states` — только в M25 (в бете группы отключены).
