@@ -734,9 +734,14 @@ Phase A из M9.6 отдельно невозможна.
    без puzzle; `ratelimit.rs` tiers подключить к `ConnectionManager` в демоне.
 3. Опционально: `access.http.url` для iroh-relay → сервис, который пускает EndpointId после первой
    успешной регистрации mailbox.
-4. Отложено (после релиза, низкий приоритет): `IdentityStamp` — Hashcash-штамп над детерминированным
-   pubkey (`BLAKE3("aira/identity-stamp/v1" ‖ pubkey ‖ bits ‖ nonce)`, 22 бита ≈ 0,5–1 с),
-   пересчитывается в фоне, снижает PoW на ContactRequest; Privacy Pass rate-limited tokens.
+4. `ContactStamp` (решение владельца 24.09, аудит §5.3.1 — вместо идеи «уровень надёжности по префиксу
+   ключа»): hashcash-штамп `BLAKE3("aira/contact-stamp/v1" ‖ pseudonym_pk ‖ epoch ‖ bits ‖ nonce)` с ведущими
+   нулями, epoch = неделя (истекает, приоритет нельзя купить навсегда), считается per-pseudonym (не линкует
+   псевдонимы), не меняет ключ и seed (после восстановления пересчитывается в фоне); поле в `InvitationLink`,
+   `ContactRequest`, `NodeRecord` хопа (M24b); даёт tier в очередях ContactRequest незнакомцев, `HopSetup`
+   и регистрации mailbox; UI — бейдж «дорогой контакт» без цифр. 1–2 дня в aira-core + поля. Настоящий
+   уровень надёжности — граф и поведение: контакт > контакт контакта > незнакомец со штампом > без.
+   Privacy Pass rate-limited tokens — после релиза.
 5. Спека: §13.2 (`spec/15-spam.md`) под adaptive difficulty, дубликат §13 из `spec/14-groups.md`
    удалить; новый §11B.10 «Стоимость identity» с этим вердиктом; таблица времён §11B.2 из бенча M19a.
 
