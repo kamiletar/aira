@@ -1,5 +1,9 @@
 # Aira — руководство по установке
 
+> ⚠️ **Статус 0.3.5: pre-release без сети.** Сообщения сохраняются локально и не доставляются собеседнику —
+> сетевой слой подключается к демону в релизном пути M18–M23 (`spec/18-milestones.md` §16.1). Ставьте для
+> знакомства с интерфейсом, не для переписки.
+
 Все инсталляторы собираются через GitHub Actions и публикуются на
 странице [Releases](https://github.com/kamiletar/aira/releases). Для
 каждой платформы есть два варианта: **installer** (рекомендуется для
@@ -27,9 +31,9 @@
 1. Скачай `aira-0.3.5-setup.msi` со страницы релиза.
 2. Двойной клик.
 3. **SmartScreen предупреждение:** Windows покажет "Windows protected
-   your PC". Это нормально — мы пока не подписываем бинарники кодовым
-   сертификатом (~$300/год, в плане на v0.4). Нажми **More info →
-   Run anyway**.
+   your PC". Это нормально — бинарники пока не подписаны; подпись через
+   SignPath Foundation (бесплатно для open source) запланирована к бете.
+   Нажми **More info → Run anyway**.
 4. Следуй шагам мастера. По умолчанию установка в
    `C:\Program Files\Aira\`.
 5. После установки в Start Menu появится ярлык **Aira**.
@@ -56,8 +60,9 @@
    - Intel: `Aira-0.3.5-x86_64.dmg`
 2. Двойной клик → перетащи **Aira** в **Applications**.
 3. **Gatekeeper предупреждение:** macOS скажет "Aira.app cannot be
-   opened because the developer cannot be verified". Это потому что у
-   нас пока нет Apple Developer ID ($99/год, в плане).
+   opened because the developer cannot be verified". Apple Developer ID и
+   notarization **не планируются** до 1.0 (решение проекта, сентябрь 2026);
+   на macOS Sequoia+ обход — через System Settings → Privacy & Security → Open Anyway.
 
    **Обход:** Правый клик на Aira.app → **Open** → **Open** в диалоге.
    После первого раза macOS запомнит решение.
@@ -101,8 +106,10 @@ keychain и `~/Library/Application Support/aira` — удали их вручн�
 
 ### Зависимости
 
-AppImage содержит GTK3 и его зависимости. На современных дистрибутивах
-(Ubuntu 22.04+, Fedora 38+, Arch) ничего дополнительно ставить не нужно.
+AppImage содержит GTK3 и его зависимости, но **сборки 0.3.5 собраны на
+Ubuntu 24.04 и требуют glibc ≥ 2.39** (Ubuntu 24.04+, Fedora 40+, Arch,
+Debian 13). На Ubuntu 22.04 / Debian 12 они не запустятся; сборка в
+контейнере 22.04 запланирована (трек M22-infra).
 
 На старых системах может потребоваться FUSE 2:
 ```bash
@@ -130,8 +137,10 @@ sudo apt install libgtk-3-0 libxdo3
 Скачай `aira-0.3.5-android.apk` и установи. Требует разрешения "Установка
 из неизвестных источников".
 
-**Примечание:** APK пока не подписан релизным ключом, только debug-подпись.
-Поэтому его нельзя обновить поверх — только удалить и поставить заново.
+**Примечание:** APK 0.3.5 **не подписан вообще** (в релизе лежит
+`app-release-unsigned.apk`) — большинство современных Android его не установит.
+Android — preview: в бете 0.5 APK не публикуется до появления подписи и
+онбординга (Android-пакет M19b). Ждите подписанного релиза.
 
 ---
 
@@ -158,3 +167,5 @@ sudo apt install libgtk-3-0 libxdo3
 - Баги: https://github.com/kamiletar/aira/issues
 - Спецификация: [SPEC.md](../SPEC.md)
 - Milestone 9.5 (этот инсталлятор): [spec/18-milestones.md](../spec/18-milestones.md#milestone-95)
+- Что видят relay и собеседник: [PRIVACY.md](PRIVACY.md); модель угроз: [THREAT_MODEL.md](THREAT_MODEL.md)
+- Уязвимости: [SECURITY.md](../SECURITY.md)
