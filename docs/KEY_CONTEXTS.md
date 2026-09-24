@@ -80,7 +80,7 @@
 |----------|-----------|-------|--------|
 | `aira/group/chain-advance` | Group sender key chain advancement | aira-core/group | код |
 | `aira/group/message-key` | Per-message group encryption key | aira-core/group | код |
-| `aira/group/sender-sign` | Ed25519 signing key per sender key — подпись групповых конвертов (решение C2: Ed25519 per sender key + AAD, PQ-вариант позже). Group AEAD: AAD = `group_id ‖ sender_id ‖ counter`, nonce = `derive_nonce(msg_key, counter)` локально. **Имя предложено** — зафиксировать в M25 | aira-core/group | план (M25) |
+| `aira/group/sender-sign` | Ed25519 signing key per sender key — подпись групповых конвертов (решение C2: Ed25519 per sender key + AAD, PQ-вариант позже). Group AEAD: AAD = `group_id ‖ sender_id ‖ epoch ‖ counter` (epoch — ротация §12.5), nonce = `derive_nonce(msg_key, counter)` локально. **Имя предложено** — зафиксировать в M25 | aira-core/group | план (M25) |
 
 ## Relay (mailbox)
 

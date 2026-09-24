@@ -107,7 +107,7 @@ let mlkem_key      = seed.derive("aira/mlkem/0");                 // KEM
 let storage_key    = seed.derive("aira/storage/0");               // DB encryption
 let iroh_secret    = seed.derive("aira/iroh/secret/0");           // транспортный ключ устройства 0 (M19)
 let pseudonym_sk   = seed.derive("aira/pseudonym/<counter>/signing"); // per-context (§12.6)
-let mailbox_id     = derive_key("aira/relay/mailbox/v2/a2b", shared_secret); // §6.5, M21
+let mailbox_id     = derive_key("aira/relay/mailbox/v2/" ‖ dir, shared_secret); // §6.5, M21 (dir = A→B | B→A)
 
 // ❌ Запрещено: использовать identity_key для шифрования данных
 // ❌ Запрещено: использовать storage_key в качестве MAC-ключа

@@ -1,7 +1,7 @@
 # SPEC: Aira — постквантовый P2P мессенджер на Rust
 
 > Техническое задание для агента Claude Code.\
-> Версия: 0.2 | Дата: апрель 2026 | Обновлено после исследования PQ/P2P ландшафта
+> Версия: 0.5 | Дата: сентябрь 2026 | Релизный путь M18–M23 (§16.1), пересмотр §12/§14/§17A по аудиту 2026-09
 
 [← Индекс](../SPEC.md)
 
@@ -59,13 +59,18 @@ push-канал для звонка (ломает децентрализацию
 Opus, отправка как медиа по существующему стеку. Все гарантии держатся: рэтчет идёт в своём
 темпе, тайминг-почерка нет (всплеск, а не поток), эхоподавление не нужно — дуплекса нет.
 
-### Не входит в scope v0.1
+### Не входит в scope v0.1 / беты 0.5
 
 - ~~Голосовые/видеозвонки~~ — **исключены из проекта навсегда** (обоснование выше).
-  Голосовые *заметки* — другое дело, они в scope (§6.11)
-- Групповые чаты (v0.2, см. п. 12)
-- Мультидевайс (v0.3, см. п. 14)
-- GUI (CLI-first, egui потом, см. п. 15)
+  Голосовые *заметки* — другое дело, они в scope (§6.11, Milestone 15 — после беты)
+- Групповые чаты — в бете 0.5 **отключены** (решение владельца A11); протокол v2 — Milestone 25,
+  после беты (см. п. 12)
+- Мультидевайс — в бете отключён; Milestone 26, после 1.0 (см. п. 14)
+- Bot API — SDK для собственного демона существует, в бету не входит; v2 — Milestone 27 (см. п. 17A)
+- GUI: бета 0.5 = egui (минимальный класс, §15.8) + CLI + Android preview; основной desktop-клиент
+  на Tauri (§15.9, Milestone 17) — между бетой и 1.0; браузер (§15.5, Milestone 14) — после релиза
+- DPI-транспорты `transport/*` (obfs4/mimicry/REALITY/Tor) — удалены (решение A13); обход
+  блокировок — свой iroh-relay на своём домене (M20), мосты (M24c), Aira Onion (M24b, §5.5)
 - ~~iOS~~ — **исключён из проекта** (iOS убивает фоновые P2P соединения
   через ~30 сек, VPN Extension ограничен 25MB RAM, Briar отказался от iOS
   по тем же причинам; 10% потерь push-уведомлений на SimpleX Chat)
@@ -82,11 +87,14 @@ Opus, отправка как медиа по существующему сте�
 
 ```
 ┌─────────────────────────────────────────────────┐
-│  CLI / Future GUI                               │  aira-cli
+│  CLI (ratatui) / GUI (egui) / Android (UniFFI)  │  aira-cli, aira-gui, aira-ffi
+│  Bot SDK (§17A)                                 │  aira-bot
+├─────────────────────────────────────────────────┤
+│  Daemon: IPC, сессии, очереди, relay_poll       │  aira-daemon (lib aira-node, M19)
 ├─────────────────────────────────────────────────┤
 │  Application Layer                              │
-│  • Contacts (add/remove/block)                  │  aira-core
-│  • Message history                              │
+│  • Contacts (invite / add / block)              │  aira-core + aira-storage
+│  • Message history (MessageMeta)                │
 │  • File transfer API                            │
 ├─────────────────────────────────────────────────┤
 │  Messaging Layer                                │
@@ -95,16 +103,20 @@ Opus, отправка как медиа по существующему сте�
 │  • File chunking & reassembly                   │
 ├─────────────────────────────────────────────────┤
 │  Session Layer                                  │
-│  • PQ Handshake (PQXDH)                        │  aira-core
-│  • Hybrid KEM: X25519 + ML-KEM-768             │
-│  • Identity: ML-DSA-65                          │
+│  • PQ Handshake (PQXDH, транскрипт)             │  aira-core
+│  • Hybrid KEM: X25519 + ML-KEM-768              │
+│  • Identity: ML-DSA-65 + per-context pseudonyms │
 ├─────────────────────────────────────────────────┤
 │  Transport Layer                                │
-│  • iroh 0.97+ (QUIC/noq + NAT traversal)       │  aira-net
-│  • Peer discovery (iroh + DHT)                  │
-│  • Relay store-and-forward (pairwise mailboxes) │
+│  • iroh 1.2 (QUIC + NAT traversal; hide_ip:     │  aira-net
+│    relay-only по умолчанию)                     │
+│  • Peer discovery: pkarr через свой             │
+│    iroh-dns-server (DHT — после релиза)         │
+│  • aira-relay mailbox v2 (store-and-forward,    │  aira-relay (M21)
+│    две коробки на пару, intro-mailbox)          │
 ├─────────────────────────────────────────────────┤
-│  Obfuscation Layer (pluggable, п. 11A)          │  aira-net
-│  • direct / obfs4 / mimicry / REALITY / Tor     │
+│  Пути к пиру (п. 5.5, 11A)                      │  aira-net
+│  • direct (per-contact opt-in) / iroh-relay     │
+│  • мосты + обфускация (M24c) / Aira Onion (M24b)│
 └─────────────────────────────────────────────────┘
 ```

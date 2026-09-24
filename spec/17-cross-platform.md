@@ -23,7 +23,7 @@
 │  фоновый процесс — desktop (Linux/macOS/Windows)                │
 │  встроенный в app — mobile (Android)                             │
 ├──────────┬──────────┬──────────┬─────────────────────────────────┤
-│  CLI     │ Desktop  │ Android  │  Web (v0.4, M14)                │
+│  CLI     │ Desktop  │ Android  │  Web (M14, после релиза)        │
 │ ratatui  │  egui    │ Kotlin + │  WASM + React/Chakra            │
 │          │          │ UniFFI   │  (aira-wasm → npm)              │
 └──────────┴──────────┴──────────┴─────────────────────────────────┘
@@ -36,13 +36,18 @@
 - Единый бинарник, работает везде где есть терминал
 - `aira-daemon` + `aira-cli` общаются через IPC:
   - Linux/macOS: Unix domain socket (`~/.aira/daemon.sock`)
-  - Windows: Named pipe (`\\.\pipe\aira-daemon`)
+  - Windows: Named pipe (`\\.\pipe\aira-daemon`; имя с SID пользователя — M19b)
+  - Аутентификация: `0700`/`0600`, `SO_PEERCRED`, токен `<data_dir>/ipc.token` (M19b п.3, §8);
+    сейчас к демону может подключиться любой локальный процесс
 
 **v0.3 — Desktop GUI (egui/eframe):**
 
-> ⚠️ С v0.4 egui-клиент переходит в класс **минимальных** (§15.8): остаётся как клиент без
-> веб-движка вообще, но интерфейсные фичи получает основной клиент на Tauri (§15.9).
-> Всё ниже в этом разделе про egui остаётся в силе для этого урезанного варианта.
+> ⚠️ egui-клиент — класс **минимальных** (§15.8): клиент без веб-движка вообще; интерфейсные
+> фичи получает основной клиент на Tauri (§15.9). **Бета 0.5 выходит с egui + CLI** (+ Android
+> preview) — решение владельца B10 (24.09.2026); Tauri (M17) — между бетой и 1.0. Всё ниже в этом
+> разделе про egui остаётся в силе для минимального варианта. M19b добавляет в egui только
+> обязательный минимум: QR/ссылка приглашения, contact requests, статус relay, Safety Number,
+> блокировка; экраны групп (`views/groups.rs`) и Settings «Linked devices» скрываются (§15.8 п.7).
 
 - Pure Rust, один исходный код → бинарник для каждой ОС
 - egui рендерит через wgpu (Vulkan/Metal/DX12) — нативная
@@ -84,7 +89,13 @@ fn main() {
   сообщения над textarea. Esc/клик по крестику — отмена.
 - В TUI (ratatui): `/reply` или выбор сообщения курсором + `r`
 
-### 15.3 Android (v0.3)
+### 15.3 Android (preview в бете 0.5)
+
+> **Статус (решения B4/B5, 24.09.2026):** Android в бете — **preview**: APK не публикуется в
+> release assets до подписи релизным keystore (сейчас `app-release-unsigned.apk`); Android developer
+> verification ($25 + government ID) пока не оформляется; Android-пакет M19b (onboarding с seed,
+> Keystore, proguard, targetSdk 36, NDK r28, FGS `specialUse`, UnifiedPush без FCM) — после десктопа.
+> Android — только клиент сети: не хоп, не relay, не mailbox (§5.5, решение C7/F9).
 
 **Архитектура:** Kotlin UI + Rust core через **UniFFI** (Mozilla)
 
@@ -102,9 +113,12 @@ fn main() {
 - **UniFFI** генерирует Kotlin биндинги из Rust интерфейсов автоматически
 - Daemon не отдельный процесс — встроен в app, работает через Android
   Foreground Service (чтобы ОС не убивала)
-- Push-уведомления: **UnifiedPush** (децентрализованный, без Google) или
-  Firebase FCM как fallback — relay отправляет "wake-up" нотификацию,
-  содержимое сообщения НЕ проходит через push-сервер
+- Push-уведомления: **UnifiedPush** (децентрализованный, без Google); FCM — нет (F-Droid
+  запрещает проприетарные push-сервисы, `firebase-messaging` убирается). Mailbox relay (§6.3b,
+  M21) отправляет пустой "wake-up" без содержимого и без `mailbox_id`; клиент делает retrieve по
+  своим коробкам
+- Foreground Service: тип `specialUse` (dataSync ограничен 6 ч/сутки на Android 15+); после M21 —
+  FGS только на время retrieve
 - Storage: redb работает на Android (обычный файл в app sandbox)
 - Target: `aarch64-linux-android`, `x86_64-linux-android` (эмулятор)
 
@@ -155,8 +169,9 @@ backend» и IndexedDB — оба решения заменены, см. ниж�
 1. **Нет прямых соединений.** UDP из песочницы недоступен, hole punching невозможен. 100% трафика
    через relay, всегда. Шифрование сквозное, relay не расшифрует, но видит IP. Прямые соединения
    появятся, только если iroh добавит WebTransport с `serverCertificateHashes` или WebRTC
-2. **Транспорты обхода DPI недоступны** — obfs4, REALITY, CDN-fallback, Tor требуют своих сокетов.
-   То есть в браузере отключается ровно та часть, которая отвечает за работу под цензурой
+2. **Мосты, обфускация (M24c) и роль хопа (§5.5) недоступны** — требуют своих UDP-сокетов.
+   Браузер — relay-only клиент: в нём отключается ровно та часть, которая отвечает за работу под
+   цензурой (прежние obfs4/REALITY/Tor из проекта удалены вообще, решение A13)
 3. **Нет доставки в фоне.** Вкладка закрыта — сообщения не приходят. Push потребовал бы сервера и
    сломал бы модель метаданных
 4. **Хранилище может быть вытеснено.** Safari/iOS чистит данные сайта после ~7 дней без визитов →
@@ -173,28 +188,41 @@ backend» и IndexedDB — оба решения заменены, см. ниж�
 **Веб-интерфейс живёт в другом репозитории** (монорепо `letar`, приложение `aira-try`). Здесь —
 только `crates/aira-wasm` и публикация npm-пакета.
 
+**Решения по браузеру (C13 — открыто у владельца; рекомендации аудита §6):** миграции БД 0.3.x
+нет — несовместимость (redb 4 + собственный `OpfsBackend`; `redb-opfs` не использовать: GPL-3.0,
+не поддерживается); iOS Safari — «не поддерживается» явно; seed между сессиями — vault под паролем,
+не повторный derive (Argon2 256 МБ при каждом открытии); крейты `aira-ipc` (типы IPC + декодер) и
+`aira-node` (SessionManager + `net_task` как библиотека) выделяются уже в M19 — они нужны и Tauri
+(§15.9), и двухдемонному тесту. Порядок: M14 — последним, после M21 (4–6 недель); первый замер
+размера `.wasm` определяет реалистичность.
+
 ### 15.6 Структура репозитория (обновлённая)
 
 ```
 aira/
-├── Cargo.toml                # workspace
+├── Cargo.toml                # workspace ([workspace.lints], rust-version 1.91)
+├── README.md, SECURITY.md, LICENSE-MIT, LICENSE-APACHE
 ├── crates/
 │   ├── aira-core/          # протокол, крипто — все платформы
-│   ├── aira-net/           # сетевой слой + pluggable transports
+│   ├── aira-net/           # сетевой слой (iroh); transport/* удалён (M19b)
 │   ├── aira-storage/       # хранилище — все платформы
-│   ├── aira-daemon/        # фоновый процесс — desktop
+│   ├── aira-daemon/        # фоновый процесс — desktop; lib с net_task (M19)
+│   ├── aira-relay/         # (M21/M24a) mailbox relay + встроенный iroh-relay — сервер
 │   ├── aira-cli/           # TUI — desktop
 │   ├── aira-gui/           # egui GUI — desktop (Linux/macOS/Windows)
-│   ├── aira-bot/           # Bot SDK — библиотека для написания ботов (v0.2)
-│   └── aira-ffi/           # UniFFI биндинги — mobile (Android)
+│   ├── aira-bot/           # Bot SDK — клиент IPC собственного демона (§17A)
+│   ├── aira-ffi/           # UniFFI биндинги — mobile (Android)
+│   ├── aira-ipc/           # (M19) общие типы IPC + декодер для CLI/GUI/бота/wasm
+│   ├── aira-node/          # (M19) SessionManager + net_task как библиотека (Tauri, wasm, тесты)
+│   └── aira-wasm/          # (M14) ядро для браузера
 ├── mobile/
 │   └── android/              # Kotlin + Jetpack Compose
-├── locales/                  # i18n — Fluent .ftl файлы
+├── locales/                  # i18n — Fluent .ftl файлы (к клиентам не подключены, §9.1)
 │   ├── en/                   # English (базовый)
-│   ├── ru/                   # Русский
-│   └── .../                  # другие языки
-├── bootstrap/                # bootstrap-ноды
-├── docs/
+│   └── ru/                   # Русский
+├── deploy/                   # (M20/M21) relay: systemd-юниты, nginx stream + SNI passthrough, Docker
+├── packaging/                # инсталляторы (AppImage / MSI / DMG)
+├── docs/                     # INSTALL, THREAT_MODEL, PRIVACY, KEY_CONTEXTS, BOT_SDK; RELAY (M21)
 └── tests/
     └── integration/
 ```
@@ -207,9 +235,15 @@ aira/
 | macOS ARM     | `aarch64-apple-darwin`     | .dmg / .app          | GitHub Actions (macOS runner)         |
 | macOS Intel   | `x86_64-apple-darwin`      | .dmg / .app          | GitHub Actions (macOS runner)         |
 | Windows       | `x86_64-pc-windows-msvc`   | .msi / portable .exe | GitHub Actions (Windows runner)       |
-| Android ARM64 | `aarch64-linux-android`    | .apk / .aab          | GitHub Actions + NDK                  |
+| Android ARM64 | `aarch64-linux-android`    | .apk (preview; в release assets после подписи), .aab — после релиза | GitHub Actions + NDK r28 |
 | ~~iOS ARM64~~ | ~~`aarch64-apple-ios`~~    | ~~.ipa~~             | ~~ИСКЛЮЧЁН~~ (см. §15.4)             |
-| Web (WASM)    | `wasm32-unknown-unknown`   | npm-пакет (`wasm-pack`) | GitHub Actions                     |
+| Web (WASM)    | `wasm32-unknown-unknown`   | npm-пакет (`wasm-pack`) — после релиза (M14) | GitHub Actions (`cargo check --target wasm32` для aira-core — гвард с M18) |
+
+Статус на 2026-09: в CI нет ни wasm32-сборки, ни `.aab` — оба **после релиза**. Linux-сборки —
+в контейнере ubuntu:22.04 (решение D5, glibc-baseline для AppImage); Windows/macOS-джобы — на
+`main` и тегах, на PR — ubuntu (B7). Подпись: Windows — SignPath Foundation, все артефакты —
+minisign + GitHub attestations; macOS без notarization (честно в INSTALL.md); Android — без
+developer verification (B6). Полный список CI-гвардов — §17, M18 п.8, M23 п.4.
 
 ### 15.8 Раскладка возможностей по клиентам
 
@@ -220,14 +254,21 @@ aira/
 
 | Клиент  | Стек                                                    |
 | ------- | ------------------------------------------------------- |
-| Desktop | **Tauri v2** + React/Chakra поверх ядра (§15.9)          |
+| Desktop | **Tauri v2** + React/Chakra поверх ядра (§15.9) — M17, между бетой и 1.0 |
 | Android | Kotlin + Jetpack Compose через UniFFI                    |
-| Web     | React/Chakra + `aira-wasm` (§15.5), статус «демо»        |
+| Web     | React/Chakra + `aira-wasm` (§15.5), статус «демо» — M14, после релиза |
 
 **Минимальные клиенты — намеренно.** `aira-cli` (ratatui TUI) и `aira-gui` (egui) остаются с
 урезанным набором возможностей. Это не техдолг, а позиция: они существуют для аудитории, которой
 важен клиент без веб-движка вообще — ноль JS, ноль WebView, минимальная поверхность атаки.
 Отдельный плюс: TUI работает по SSH и на машине без графики.
+
+**Бета 0.5 выходит только с минимальными клиентами** — egui + CLI, Android как preview (решения
+владельца B10/B4, 24.09.2026); Tauri (M17) — после беты, до 1.0. Работа M19b над egui (QR/ссылка,
+contact requests, статус relay, Safety Number, блокировка) укладывается в «обязательный минимум
+навсегда» (п.2). M9.6 Phase C/D/E (i18n на 10 языков, темы, UX polish для egui) противоречат
+заморозке п.1 — по умолчанию уходят в Tauri-клиент (`letar`); оставить их для egui можно только
+отдельным решением владельца (аудит E §4.3).
 
 Правила для минимальных клиентов:
 
@@ -244,6 +285,12 @@ aira/
    списки. Спойлеры требуют интеракции, в TUI опциональны
 6. **Не выдумывать свой UX.** Если фичи нет — честная строка-заглушка, а не половинчатая
    реализация, которую потом придётся поддерживать
+7. **Скрывать нереализованное до соответствующего milestone** (аудит E, решение A11). Минимальные
+   клиенты **не показывают**: группы (`/group`, `views/groups.rs`, FFI-методы, Android
+   `GroupsScreen`) — до M25; устройства (`/link`, `/devices`, `/unlink`, Settings «Linked
+   devices») — до M26; `/lang` — до подключения i18n (§9.1); `/profile`, `/search`, `/mute`,
+   `/pin` — до M28; `/delete-account` — до M20/M21; `/transport` — удалён. Демон на такие запросы
+   отвечает `Error("… not available in this beta")` (§8)
 
 ⚠️ Если минимальный клиент начинает отставать по **ядру** (старый формат рэтчета, устаревший
 handshake) — это уже не минимализм, а несовместимость. Такой клиент либо обновляют, либо
@@ -261,7 +308,10 @@ handshake) — это уже не минимализм, а несовмести�
 2. **`aira-core` линкуется в процесс.** Бэкенд Tauri сам на Rust: секреты не переходят в JS,
    `zeroize` продолжает работать, и **не нужен spawn демона** — Milestone 9.5 потратил силы на
    auto-spawn, Tauri удаляет весь этот класс проблем (осиротевшие процессы, права на сокет,
-   гонка на старте)
+   гонка на старте). **Предпосылка:** для этого нужна библиотека `aira-node` (SessionManager,
+   handler, дренаж pending, `relay_poll`) — M19 реализует `net_task` именно как крейт, а не как код
+   внутри бинарника демона; иначе M17 повторит весь wiring (аудит E §4.3). Порядок переноса фич в
+   Tauri (M17 п.7): группы — после M25
 3. **Размер.** 10–20 МБ против 120–200 МБ. На странице загрузки приватного мессенджера это
    видимый сигнал
 4. Главный козырь Electron — встроенный WebRTC-стек — не нужен: звонков нет и не будет (§1)

@@ -86,7 +86,8 @@ Alice → Dave:    relay-A/mailbox-ghi789
 - Mailbox ID детерминистичен из pairwise `shared_secret` (§4.2) — оба пира знают адрес
   без дополнительного обмена:
   `mailbox_id[dir] = derive_key("aira/relay/mailbox/v2/" ‖ dir, shared_secret)`,
-  `dir ∈ {"a2b", "b2a"}`. Ключи `owner_key[dir]` / `sender_key[dir]` (Ed25519 — подписи
+  `dir` = `A→B` / `B→A`, где A — сторона с лексикографически меньшим pubkey (как в §6.3b и
+  `docs/KEY_CONTEXTS.md`). Ключи `owner_key[dir]` / `sender_key[dir]` (Ed25519 — подписи
   `Register/Retrieve/Ack/Delete` и `Deposit`) — из того же секрета, контексты
   `aira/relay/owner/v2/<dir>`, `aira/relay/sender/v2/<dir>` (`docs/KEY_CONTEXTS.md`).
   Полная спецификация протокола (`RelayHello`, `Register`, `Deposit`, `Retrieve`, `Ack`,

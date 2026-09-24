@@ -226,8 +226,7 @@ Handshake (chunked):
 
 ```
 Seed Phrase (24 words, BIP-39 wordlist)
-    ↓ Argon2id(phrase, salt="aira-master-v1-m256", m=256MB, t=3, p=4)  [desktop]
-    ↓ Argon2id(phrase, salt="aira-master-v1-m64",  m=64MB,  t=4, p=4)  [mobile]
+    ↓ Argon2id(phrase, salt="aira-master-v1-m256", m=256MB, t=3, p=4)  [единственный профиль]
 Master Seed (32 bytes)
     ↓ BLAKE3-KDF(context="aira/identity/0")
 ML-DSA-65 Signing Key (identity)
@@ -245,21 +244,18 @@ Storage Encryption Key (для redb)
 - Argon2id — memory-hard, GPU/ASIC resistant
 - Крейт: `argon2`
 
-**Адаптивные параметры:**
+**Параметры (один профиль для всех платформ — решение владельца 24.09, A4):**
 
-| Платформа | m (memory) | t (iterations) | p (parallelism) | Salt |
-|-----------|-----------|----------------|-----------------|------|
-| Desktop   | 256 MB    | 3              | 4               | `aira-master-v1-m256` |
-| Mobile    | 64 MB     | 4              | 4               | `aira-master-v1-m64`  |
+| Профиль | m (memory) | t (iterations) | p (parallelism) | Salt |
+|---------|-----------|----------------|-----------------|------|
+| единственный | 256 MB | 3 | 4 | `aira-master-v1-m256` |
 
-- OWASP минимум: m=19MB; IETF RFC 9106: m=64MB — mobile параметры
-  соответствуют стандарту
-- 256MB на устройстве с 1-2GB RAM = OOM kill (iOS/Android)
-- **Параметры закодированы в salt** — при восстановлении seed на другой
-  платформе daemon пробует оба набора параметров автоматически
-- Desktop (256MB) и mobile (64MB) параметры дают **один и тот же**
-  Master Seed, если salt совпадает. Поэтому каждый набор параметров
-  имеет уникальный salt
+- Профиль `Platform::Mobile` (m=64 MB, salt `aira-master-v1-m64`) **удаляется в M18**: разные соли дают
+  **разные** Master Seed из одной фразы, то есть разные identity на разных платформах (аудит §5.3).
+  В коде он и так использовался только в тестах; aira-ffi/Android деривирует с профилем 256 MB.
+- Цена: ~1–3 с на десктопе, 3–9 с в браузере, 256 MB RAM на телефоне во время деривации (один раз при
+  восстановлении; далее seed хранится в keychain/Keystore). OWASP минимум m=19 MB, RFC 9106 — 64 MB.
+- Для тестов — `MasterSeed::from_raw([u8; 32])` под `cfg(any(test, feature = "test-utils"))`, а не дешёвый профиль.
 
 **Нюанс ML-DSA:** `ml-dsa` крейт генерирует ключи из 32-байтного seed
 через внутренний `expandA` / `expandS`. Нужно убедиться что API принимает

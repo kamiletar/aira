@@ -24,7 +24,7 @@
 | Утечка IP собеседнику / в invitation link                  | `hide_ip = true`: `clear_ip_transports()`, ссылка без IP, pkarr только relay (§5.1); direct — per-contact opt-in |
 | Атака на якоря / каталог relay                             | Подписанный каталог (ML-DSA-65; 2-of-3 к 1.0), TOFU для контактов, точки входа без глобального каталога (§5.3, §5.5.10) |
 | Спам / массовые Contact Request                            | PoW адаптивный 16→28 бит с `server_nonce ‖ slot`, rate limiting, block list, `ContactStamp` (п. 11B.1, §13) |
-| Flood в групповых чатах                                    | Rate limit 30 msg/min, admin-only invites           |
+| Flood в групповых чатах                                    | Rate limit 30 msg/min, admin-only invites (M25; в бете группы отключены) |
 | DPI / блокировка протокола                                 | `hide_ip` + iroh-relay WSS:443 на своём домене (M20); мосты с PSK-обфускацией датаграмм через `CustomTransport` (M24c, п. 11A) |
 | Активное зондирование (active probing)                     | PSK-мосты: без PSK мост не отвечает как Aira (M24c); REALITY-fallback на чужой сайт исключён |
 | QUIC Initial / ALPN читаемы DPI (RFC 9001)                 | Обфускация датаграмм первого хопа (`aira/bridge/obfs/v1`, M24c); переименование ALPN не помогает |
