@@ -13,7 +13,7 @@
 3. Тема владельца 23.09 — «протокол нельзя превратить в паразитирующий прокси» + «скрыть IP хоп-хоп-хоп» +
    «задействовать всех пиров» + «список relay = блок-лист РКН» → отчёт **G** `onion-antiabuse.md` (дизайн
    Aira Onion v1, инварианты AP-1…AP-7, ответ «все пиры — да, с ограничениями по классу устройства и
-   юрисдикции», M24a–M24e) и выжимка §8.7.
+   юрисдикции», M24a–M24d) и выжимка §8.7.
 
 ## Статус тем фазы 3
 
@@ -24,7 +24,7 @@
 | C | Тесты/фаззинг | `test-coverage-audit.md` | ✅ отчёт + §8.3 |
 | D | CI/CD и supply chain | `ci-supply-chain-audit.md` | ✅ отчёт (848 строк) + §8.4 + `raw/2026-09-24-D-summary.md` |
 | E | Остаток спеки (группы, мультидевайс, боты, §6.x, Tauri) | `spec-remainder-audit.md` | ✅ отчёт + §8.5 + `raw/2026-09-23-E-summary.md` |
-| F | Community relays (standalone aira-relay, relay в клиенте, N-of-M) | `community-relays.md` | ✅ отчёт (518 строк) + §8.6 + `raw/2026-09-24-F-summary.md`; нумерация M24a/M24b |
+| F | Community relays (standalone aira-relay, relay в клиенте, N-of-M) | `community-relays.md` | ✅ отчёт (518 строк) + §8.6 + `raw/2026-09-24-F-summary.md`; нумерация M24a.1/M24a.2 |
 | G | Скрытие IP + анти-паразитный форвардинг, все пиры как хопы | `onion-antiabuse.md` | ✅ отчёт + §8.7 + заметка в spec §16.1 |
 
 ## Что осталось (по порядку)
@@ -36,8 +36,8 @@
    в бете отключить; REALITY исключить; transport/* удалить.
 2. Получить ответы владельца по `owner-decisions.md` (хотя бы группа A) — без них правки планов ниже
    останутся с развилками.
-3. **Внести правки планов из §8.1–§8.7 в текст M18–M23** `spec/18-milestones.md` и добавить M24a–M24e,
-   M25–M28 (нумерация: M24a каталог relay + community-server-relay, M24b client-relay, M24c Aira Onion v1, M24d мосты/обфускация, M24e mix;
+3. **Внести правки планов из §8.1–§8.7 в текст M18–M23** `spec/18-milestones.md` и добавить M24a–M24d,
+   M25–M28 (нумерация: M24a community relays = M24a.1 каталог + server-relay, M24a.2 роли relay/mailbox в клиенте; M24b Aira Onion v1, M24b мосты/обфускация, M24c mix;
    M25 группы v2, M26 мультидевайс v2, M27 Bot API v2, M28 §6.x). Спека: новый §5.5 «Aira Onion»
    (`spec/03-network.md`), §11/§11A/§11B.5/§6.22 по §8 G, 33 правки из E §5, §6.5.3 главного документа.
 4. Запуск M18 (дедлайн **30.09.2026** — отключение публичных relay n0 для iroh 0.9x; целевая версия iroh 1.2).
@@ -52,7 +52,7 @@
 - Anti-abuse: per-action adaptive PoW + contact-first; PoW на ключ — не делать (§5.3); те же PoW/квоты —
   для `HopSetup` в onion (G).
 - Onion (G): «все форвардят» = защита от паразитов при инвариантах AP-1…AP-7; глобального каталога relay
-  нет (РКН); хоп-идентичность отдельно от чат-идентичности; M24c–d после M21.
+  нет (РКН); хоп-идентичность отдельно от чат-идентичности; M24b–d после M21.
 - Релиз 2026: SignPath (Windows), Apple $99, Flathub исключить, Android developer verification (§6.6).
 - CI/supply chain (D): CI на `main` красный с 10.04 (18 advisories, clippy 1.98); нет LICENSE-файлов и README;
   release.yml с write-токеном исполняет непроверенный linuxdeploy; 0 SHA-пинов; SLSA L2 к бете.
